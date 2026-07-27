@@ -1,0 +1,235 @@
+/**
+ * Feature flag & kuota per tenant.
+ *
+ * ARCHITECTURE.md Bagian 11 / PRD 2.1 & 6.27:
+ *   "Feature flag per tenant, bukan basis kode per paket — satu basis kode melayani
+ *    seluruh paket langganan."
+ */
+
+/** Kunci modul mengikuti penamaan modul PRD Bagian 6 (BRAND.md Bagian 7: tidak diterjemahkan). */
+export const MODULE_KEYS = [
+  'executive_cockpit',
+  'operational_cockpit',
+  'balanced_scorecard',
+  'dashboard_designer',
+  'report_designer',
+  'interactive_visualization',
+  'embed_dashboard',
+  'ai_analytics',
+  'forecast_analytics',
+  'root_cause_analysis',
+  'data_discovery',
+  'ai_narrative_report',
+  'descriptive_statistics',
+  'hypothesis_testing',
+  'regression_correlation',
+  'dataset',
+  'external_connection',
+  'data_modeling',
+  'data_quality_center',
+  'kpi_center',
+  'alert_center',
+  'digital_twin',
+  'employee_master',
+  'user_authorization',
+  'activity_log',
+  'device_management',
+  'tenant_management',
+  'subscription_management',
+  'billing_invoice',
+  'usage_metering',
+] as const;
+
+export type ModuleKey = (typeof MODULE_KEYS)[number];
+
+export type QuotaKey =
+  | 'users'
+  | 'datasets'
+  | 'storage_mb'
+  | 'connections'
+  | 'embed_tokens'
+  | 'ai_calls_monthly';
+
+export interface PlanDefinition {
+  code: string;
+  name: string;
+  monthlyPrice: number;
+  annualPrice: number;
+  features: Record<ModuleKey, boolean>;
+  quotas: Record<QuotaKey, number>;
+  /** Perilaku saat kuota terlampaui — dikonfigurasi eksplisit & diberitahukan di muka (PRD 6.29). */
+  overBehaviour: Record<QuotaKey, 'block' | 'overage'>;
+  sortOrder: number;
+}
+
+function featureSet(enabled: ModuleKey[]): Record<ModuleKey, boolean> {
+  const out = {} as Record<ModuleKey, boolean>;
+  for (const key of MODULE_KEYS) out[key] = false;
+  for (const key of enabled) out[key] = true;
+  return out;
+}
+
+/** Modul dasar: selalu tersedia di semua paket — tanpa ini platform tidak berfungsi. */
+const CORE_MODULES: ModuleKey[] = [
+  'dataset',
+  'data_modeling',
+  'data_quality_center',
+  'dashboard_designer',
+  'report_designer',
+  'interactive_visualization',
+  'employee_master',
+  'user_authorization',
+  'activity_log',
+  'device_management',
+  'tenant_management',
+  'subscription_management',
+  'billing_invoice',
+  'usage_metering',
+  'kpi_center',
+  'alert_center',
+  'operational_cockpit',
+];
+
+const PROFESSIONAL_EXTRA: ModuleKey[] = [
+  'external_connection',
+  'ai_analytics',
+  'forecast_analytics',
+  'data_discovery',
+  'descriptive_statistics',
+  'hypothesis_testing',
+  'regression_correlation',
+  'executive_cockpit',
+  'embed_dashboard',
+];
+
+const ENTERPRISE_EXTRA: ModuleKey[] = [
+  'balanced_scorecard',
+  'root_cause_analysis',
+  'ai_narrative_report',
+  'digital_twin',
+];
+
+/**
+ * Struktur paket indikatif — PRD 2.1. Angka final ditetapkan tim bisnis
+ * (PRD Bagian 12 Pertanyaan Terbuka: harga & diskon tahunan belum ditetapkan).
+ */
+export const PLAN_CATALOG: readonly PlanDefinition[] = [
+  {
+    code: 'starter',
+    name: 'Starter',
+    monthlyPrice: 0,
+    annualPrice: 0,
+    features: featureSet(CORE_MODULES),
+    quotas: {
+      users: 10,
+      datasets: 25,
+      storage_mb: 2_048,
+      connections: 0,
+      embed_tokens: 0,
+      ai_calls_monthly: 0,
+    },
+    overBehaviour: {
+      users: 'block',
+      datasets: 'block',
+      storage_mb: 'block',
+      connections: 'block',
+      embed_tokens: 'block',
+      ai_calls_monthly: 'block',
+    },
+    sortOrder: 1,
+  },
+  {
+    code: 'professional',
+    name: 'Professional',
+    monthlyPrice: 4_500_000,
+    annualPrice: 45_000_000,
+    features: featureSet([...CORE_MODULES, ...PROFESSIONAL_EXTRA]),
+    quotas: {
+      users: 100,
+      datasets: 300,
+      storage_mb: 51_200,
+      connections: 15,
+      embed_tokens: 10,
+      ai_calls_monthly: 5_000,
+    },
+    overBehaviour: {
+      users: 'block',
+      datasets: 'overage',
+      storage_mb: 'overage',
+      connections: 'block',
+      embed_tokens: 'block',
+      // Metering AI dihitung & ditagih terpisah karena biayanya bergantung
+      // penyedia LLM eksternal (PRD 6.29).
+      ai_calls_monthly: 'overage',
+    },
+    sortOrder: 2,
+  },
+  {
+    code: 'enterprise',
+    name: 'Enterprise',
+    monthlyPrice: 18_000_000,
+    annualPrice: 180_000_000,
+    features: featureSet([...CORE_MODULES, ...PROFESSIONAL_EXTRA, ...ENTERPRISE_EXTRA]),
+    quotas: {
+      users: -1, // -1 = tidak dibatasi / sesuai kontrak
+      datasets: -1,
+      storage_mb: -1,
+      connections: -1,
+      embed_tokens: -1,
+      ai_calls_monthly: 100_000,
+    },
+    overBehaviour: {
+      users: 'overage',
+      datasets: 'overage',
+      storage_mb: 'overage',
+      connections: 'overage',
+      embed_tokens: 'overage',
+      ai_calls_monthly: 'overage',
+    },
+    sortOrder: 3,
+  },
+];
+
+export const PLAN_BY_CODE = new Map(PLAN_CATALOG.map((p) => [p.code, p]));
+
+/** Feature flag efektif satu tenant. */
+export class FeatureFlags {
+  constructor(
+    private readonly plan: PlanDefinition,
+    /** Override per tenant (mis. Digital Twin dimatikan untuk organisasi tanpa aset fisik — PRD 6.17). */
+    private readonly overrides: Partial<Record<ModuleKey, boolean>> = {},
+    /** Tenant read-only saat tunggakan — SECURITY.md 16.4 */
+    readonly readOnly = false,
+  ) {}
+
+  isEnabled(module: ModuleKey): boolean {
+    return this.overrides[module] ?? this.plan.features[module] ?? false;
+  }
+
+  enabledModules(): ModuleKey[] {
+    return MODULE_KEYS.filter((m) => this.isEnabled(m));
+  }
+
+  quota(key: QuotaKey): number {
+    return this.plan.quotas[key];
+  }
+
+  overBehaviour(key: QuotaKey): 'block' | 'overage' {
+    return this.plan.overBehaviour[key];
+  }
+
+  get planCode(): string {
+    return this.plan.code;
+  }
+
+  toJSON(): { plan: string; readOnly: boolean; modules: Record<string, boolean>; quotas: Record<string, number> } {
+    const modules: Record<string, boolean> = {};
+    for (const m of MODULE_KEYS) modules[m] = this.isEnabled(m);
+    return {
+      plan: this.plan.code,
+      readOnly: this.readOnly,
+      modules,
+      quotas: { ...this.plan.quotas },
+    };
+  }
+}

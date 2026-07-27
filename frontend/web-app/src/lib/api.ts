@@ -1,0 +1,172 @@
+/**
+ * Klien API. Seluruh permintaan menuju `/api/v1/...` (ARCHITECTURE.md Bagian 6).
+ *
+ * Kesalahan dari server hanya memuat KUNCI i18n; klien menerjemahkannya lewat kamus
+ * (DESIGN.md 8.2) — tidak ada kalimat kesalahan yang dirakit di sini.
+ */
+import type { FingerprintComponents } from './fingerprint.ts';
+
+const BASE = '/api/v1';
+
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly key: string,
+    readonly detail: Record<string, unknown> | null,
+    readonly recoveryKey: string | null = null,
+  ) {
+    super(key);
+    this.name = 'ApiError';
+  }
+}
+
+let sessionToken: string | null = null;
+
+export function setToken(token: string | null): void {
+  sessionToken = token;
+  try {
+    if (token) localStorage.setItem('vantik.token', token);
+    else localStorage.removeItem('vantik.token');
+  } catch {
+    /* penyimpanan lokal tidak tersedia — sesi tetap berjalan lewat cookie */
+  }
+}
+
+export function loadToken(): string | null {
+  if (sessionToken) return sessionToken;
+  try {
+    sessionToken = localStorage.getItem('vantik.token');
+  } catch {
+    sessionToken = null;
+  }
+  return sessionToken;
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  headers.set('Accept', 'application/json');
+  if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+
+  const token = loadToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+
+  const response = await fetch(`${BASE}${path}`, { ...init, headers, credentials: 'include' });
+  const isJson = response.headers.get('content-type')?.includes('application/json');
+  const payload = isJson ? await response.json() : await response.text();
+
+  if (!response.ok) {
+    const error = (payload as { error?: { key?: string; detail?: Record<string, unknown>; recoveryKey?: string } }).error;
+    throw new ApiError(
+      response.status,
+      error?.key ?? 'error.internal',
+      error?.detail ?? null,
+      error?.recoveryKey ?? null,
+    );
+  }
+  return payload as T;
+}
+
+export const api = {
+  get: <T>(path: string): Promise<T> => request<T>(path),
+  post: <T>(path: string, body?: unknown, idempotencyKey?: string): Promise<T> =>
+    request<T>(path, {
+      method: 'POST',
+      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    }),
+  put: <T>(path: string, body?: unknown): Promise<T> =>
+    request<T>(path, { method: 'PUT', body: body === undefined ? undefined : JSON.stringify(body) }),
+  patch: <T>(path: string, body?: unknown): Promise<T> =>
+    request<T>(path, { method: 'PATCH', body: body === undefined ? undefined : JSON.stringify(body) }),
+  delete: <T>(path: string): Promise<T> => request<T>(path, { method: 'DELETE' }),
+
+  async login(input: {
+    email: string;
+    password: string;
+    tenantSlug?: string;
+    fingerprint: FingerprintComponents;
+  }): Promise<{ token: string; expiresAt: string; deviceRegistered: boolean }> {
+    const result = await request<{ token: string; expiresAt: string; deviceRegistered: boolean }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    setToken(result.token);
+    return result;
+  },
+
+  async logout(): Promise<void> {
+    try {
+      await request('/auth/logout', { method: 'POST' });
+    } finally {
+      setToken(null);
+    }
+  },
+};
+
+/* ---------------- Bentuk data yang dipakai antarmuka ---------------- */
+
+export interface Session {
+  user: {
+    id: string;
+    email: string;
+    displayName: string;
+    locale: 'id' | 'en';
+    theme: 'light' | 'dark';
+    roles: string[];
+    mfaEnrolled: boolean;
+  };
+  tenant: {
+    id: string;
+    name: string;
+    slug: string;
+    status: string;
+    accentColor: string | null;
+    logoText: string | null;
+    whiteLabel: boolean;
+    maxDevicesPerUser: number;
+  };
+  flags: { plan: string; readOnly: boolean; modules: Record<string, boolean>; quotas: Record<string, number> };
+  rls: { restricted: boolean; dimensions: string[] };
+  permissions: string[];
+}
+
+export interface Dataset {
+  id: string;
+  name: string;
+  source_type: string;
+  status: string;
+  classification: string;
+  certification: string;
+  quality_score: number | null;
+  row_count: number;
+  size_bytes: number;
+  original_filename: string | null;
+  failure_reason_key: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KpiSummary {
+  id: string;
+  code: string;
+  name: string;
+  unit: string | null;
+  target: number | null;
+  weight: number;
+  direction: string;
+  state: string;
+  thresholds: Array<{ level: string; comparator: string; value: number }>;
+  latest: { period: string; value: number; score: number; status: string } | null;
+}
+
+export interface AuditRow {
+  id: string;
+  occurred_at: string;
+  actor_label: string;
+  actor_ip: string | null;
+  action: string;
+  module: string;
+  object_label: string | null;
+  severity: string;
+  outcome: string;
+}

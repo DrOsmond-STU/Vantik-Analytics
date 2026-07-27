@@ -1,0 +1,124 @@
+/*
+ * Vantik Analytics — Design Tokens
+ * DESIGN.md Bagian 2 (warna), 3 (tipografi), 4 (spacing/radius/shadow), 13 (implementasi teknis).
+ *
+ * Komponen tidak pernah memakai nilai hex/px langsung — selalu lewat token di berkas ini.
+ */
+
+:root[data-theme='light'] {
+  --canvas: #f5f7fb;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --border: #e3e7f0;
+  --text-900: #101828;
+  --text-600: #4a5468;
+  --text-400: #8d96aa;
+  --chrome: #0b1220;
+  --accent: #0ea5a5;
+  --accent-soft: #e4f7f6;
+  --good: #16a34a;
+  --good-soft: #e7f7ec;
+  --warn: #f59e0b;
+  --warn-soft: #fef3e0;
+  --bad: #dc2626;
+  --bad-soft: #fce9e9;
+  --info: #3b5bdb;
+
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --shadow-raised: 0 20px 50px rgba(16, 24, 40, 0.18);
+
+  /* DESIGN.md 2.2 — warna kategori data tidak berbalik antar-mode */
+  --series-1: #0ea5a5;
+  --series-2: #3b5bdb;
+  --series-3: #f59e0b;
+  --series-4: #7c3aed;
+  --series-5: #16a34a;
+  --series-6: #db2777;
+  --series-7: #0891b2;
+  --series-8: #ca8a04;
+
+  /* Warna teks pada latar -soft; dipisah agar kontras AA teruji per mode (DESIGN.md 2.1) */
+  --on-good-soft: #15803d;
+  --on-warn-soft: #b7791f;
+  --on-bad-soft: #b91c1c;
+  --on-accent-soft: #0a8484;
+
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --canvas: #0b1220;
+  --surface: #131c33;
+  --surface-raised: #1b2748;
+  --border: #262f4a;
+  --text-900: #f4f6fb;
+  --text-600: #abb3c8;
+  --text-400: #6d7690;
+  --chrome: #05070d;
+  --accent: #2dd4bf;
+  --accent-soft: #0f2e2c;
+  --good: #4ade80;
+  --good-soft: #123322;
+  --warn: #fbbf24;
+  --warn-soft: #3a2c0c;
+  --bad: #f87171;
+  --bad-soft: #3a1414;
+  --info: #7c93ff;
+
+  --shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  --shadow-raised: 0 20px 50px rgba(0, 0, 0, 0.5);
+
+  --series-1: #22b5b5;
+  --series-2: #4e6de6;
+  --series-3: #ffaa1e;
+  --series-4: #8b4cf2;
+  --series-5: #22b058;
+  --series-6: #e63b87;
+  --series-7: #149dbf;
+  --series-8: #d89710;
+
+  --on-good-soft: #4ade80;
+  --on-warn-soft: #fbbf24;
+  --on-bad-soft: #f87171;
+  --on-accent-soft: #2dd4bf;
+
+  color-scheme: dark;
+}
+
+:root {
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --radius-xs: 6px;
+  --space-unit: 4px;
+
+  /* Sidebar dark chrome — nilai tetap di kedua mode (DESIGN.md 7.3) */
+  --chrome-text: #aeb7cc;
+  --chrome-text-strong: #ffffff;
+  --chrome-muted: #6b7590;
+  --chrome-hover: #161f3b;
+  --chrome-active: #182241;
+  --chrome-border: #26325a;
+}
+
+/* DESIGN.md 7.2 — transisi halus 150–200ms, dihormati prefers-reduced-motion */
+:root {
+  --theme-transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --theme-transition: none;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

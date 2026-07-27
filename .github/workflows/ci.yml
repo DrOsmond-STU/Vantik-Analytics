@@ -1,0 +1,88 @@
+# Gate CI/CD — TESTING.md Bagian 12, DEPLOYMENT.md Bagian 3.
+#
+# Sebuah perubahan TIDAK DAPAT digabung kecuali:
+#   - seluruh unit test lulus & cakupan tidak turun dari baseline;
+#   - SAST & dependency scan tanpa temuan Critical/High baru;
+#   - test case yang berasal dari checklist PRD untuk modul terkait lulus.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build, typecheck & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck & build (API + web app)
+        run: npm run build
+
+      # Ambang cakupan ditegakkan vitest.config.ts; kegagalan memblokir merge.
+      - name: Unit, integration & E2E tests with coverage
+        run: npm run test:coverage
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: services/coverage/
+          retention-days: 14
+
+  dependency-scan:
+    name: Dependency / SCA scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      # Kerentanan Critical/High memblokir merge (TESTING.md Bagian 10).
+      - name: npm audit (high & critical block the merge)
+        run: npm audit --audit-level=high
+
+  sast:
+    name: SAST
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v3
+
+  tenant-isolation-gate:
+    name: Tenant isolation (release-blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      # SECURITY.md 16.1 menuntut pengujian lintas-tenant memblokir rilis bila gagal —
+      # dijalankan sebagai job tersendiri agar kegagalannya tidak tersamar di antara
+      # ratusan test lain.
+      - name: Cross-tenant access must always fail
+        working-directory: services
+        run: npx vitest run tests/security.test.ts
