@@ -35,7 +35,7 @@ Kode organisasi: `demo`.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 172 test
+npm test              # 241 test
 npm run test:coverage # dengan ambang cakupan
 ```
 
@@ -177,7 +177,7 @@ kontrol keamanan yang kuat* — karena itu ia tidak pernah menggantikan autentik
 
 ## Pengujian
 
-172 test, mengikuti TESTING.md. Penamaan `TC-XX-NN` mengikuti pola Bagian 3.
+241 test, mengikuti TESTING.md. Penamaan `TC-XX-NN` mengikuti pola Bagian 3.
 
 | Berkas | Cakupan |
 |---|---|
@@ -186,8 +186,10 @@ kontrol keamanan yang kuat* — karena itu ia tidak pernah menggantikan autentik
 | `tests/stats.test.ts` | Nilai rujukan distribusi & uji statistik; determinisme |
 | `tests/i18n.test.ts` | Paritas kunci ID/EN, nama modul tidak diterjemahkan, token Light/Dark |
 | `tests/api.e2e.test.ts` | Alur E2E lintas modul lewat HTTP, isolasi tenant di lapisan API, validasi permintaan, dan proteksi lintasan berkas saat frontend disajikan |
+| `tests/sqlite.test.ts` | Kesetaraan **kedua** driver SQLite — jalur `node:sqlite` yang dipakai shared hosting tidak boleh berperilaku berbeda dari `better-sqlite3` |
+| `tests/billing.test.ts` | Arah upgrade/downgrade, pro-rata, kuota terlampaui, verifikasi tanda tangan webhook, dan penurunan akses bertahap akibat tunggakan |
 
-Cakupan saat ini: **82,6% baris / 86% fungsi**. Ambang ditegakkan di `vitest.config.ts` dan
+Cakupan saat ini: **84,5% baris / 85% fungsi**. Ambang ditegakkan di `vitest.config.ts` dan
 memblokir merge bila turun.
 
 ---

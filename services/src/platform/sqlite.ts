@@ -133,9 +133,17 @@ class NodeSqliteAdapter implements SqliteDatabase {
 }
 
 /**
- * `node:sqlite` menolak `undefined` sebagai nilai bind, sedangkan better-sqlite3
- * memperlakukannya seperti NULL pada beberapa jalur. Disamakan di sini agar perilaku
- * aplikasi tidak bergantung pada driver yang terpilih.
+ * Menyamakan nilai bind sebelum diteruskan ke driver mana pun.
+ *
+ * KEDUA driver menolak `undefined` dan `boolean` mentah — SQLite hanya mengenal
+ * number/string/bigint/blob/null. Tanpa normalisasi di kedua jalur, medan opsional yang
+ * tidak terisi berujung pada crash yang bergantung driver: satu pemasangan berjalan,
+ * pemasangan lain gagal pada kode yang sama. Itu justru kegagalan yang paling mahal
+ * dicari, karena hanya muncul di server orang lain.
+ *
+ * `undefined` → NULL, dan `boolean` → 0/1 (SQLite tidak punya tipe boolean). Kolom
+ * `NOT NULL` tetap gagal keras seperti seharusnya, jadi normalisasi ini tidak menyamarkan
+ * nilai yang memang wajib ada.
  */
 function normalise(params: unknown[]): unknown[] {
   return params.map((param) => {
@@ -171,7 +179,15 @@ class BetterSqliteAdapter implements SqliteDatabase {
   constructor(private readonly db: BetterSqliteDatabase) {}
 
   prepare(sql: string): SqliteStatement {
-    return this.db.prepare(sql);
+    const statement = this.db.prepare(sql);
+    // Normalisasi diterapkan di SINI juga, bukan hanya pada jalur node:sqlite.
+    // Kalau tidak, kedua driver tidak lagi setara dan pemanggil harus tahu driver mana
+    // yang aktif — persis yang dihapus oleh adapter ini.
+    return {
+      run: (...params: unknown[]): RunResult => statement.run(...normalise(params)),
+      get: (...params: unknown[]): unknown => statement.get(...normalise(params)),
+      all: (...params: unknown[]): unknown[] => statement.all(...normalise(params)),
+    };
   }
 
   exec(sql: string): void {
