@@ -7,12 +7,13 @@
  *   unggah CSV → validasi & scan → Data Quality Center → pemetaan → KPI → cockpit
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
 import type { Express } from 'express';
 import { createApp } from '../src/app.ts';
+import { mountWebApp } from '../src/server.ts';
 import { fingerprint, syntheticCsv, TEST_PASSWORD } from './helpers.ts';
 import type { Db } from '../src/platform/db.ts';
 
@@ -848,5 +849,137 @@ describe('Isolasi tenant lewat HTTP (memblokir rilis)', () => {
     await request(app).post('/api/v1/auth/logout').set('Authorization', `Bearer ${throwaway}`);
     const after = await request(app).get('/api/v1/me').set('Authorization', `Bearer ${throwaway}`);
     expect(after.status).toBe(401);
+  });
+
+  /**
+   * Badan permintaan statistik yang salah bentuk adalah kesalahan KLIEN (400),
+   * bukan kesalahan server (500). Sebelumnya nama medan yang salah menembus sampai
+   * ke kode numerik dan meledak sebagai TypeError — operator melihat 500 seolah
+   * server rusak, dan klien tidak mendapat petunjuk apa pun untuk memperbaikinya.
+   */
+  it('TC-E2E-44 — badan permintaan statistik salah bentuk ditolak 400, bukan 500', async () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      // `predictors` bukan nama medan yang benar (`predictorFields`).
+      ['/api/v1/stats/regression', { datasetId, kind: 'linear', responseField: 'skor_csat', predictors: ['jumlah_tiket'] }],
+      ['/api/v1/stats/regression', { datasetId, kind: 'linear', responseField: 'skor_csat', predictorFields: [] }],
+      ['/api/v1/stats/regression', { datasetId, kind: 'linear', predictorFields: ['jumlah_tiket'] }],
+      ['/api/v1/stats/descriptive', { datasetId }],
+      ['/api/v1/stats/descriptive', { datasetId, fields: 'skor_csat' }],
+      ['/api/v1/stats/correlation', { datasetId, fields: [] }],
+      ['/api/v1/stats/correlation', { fields: ['skor_csat', 'jumlah_tiket'] }],
+      ['/api/v1/stats/hypothesis', { datasetId }],
+      ['/api/v1/stats/hypothesis', {}],
+    ];
+
+    for (const [path, body] of cases) {
+      const response = await request(app).post(path).set(...auth()).send(body);
+      expect(response.status, `${path} ${JSON.stringify(body)}`).toBe(400);
+      expect(response.body.error.key).toBe('error.validation_failed');
+    }
+  });
+
+  it('TC-E2E-45 — permintaan statistik yang benar tetap dilayani', async () => {
+    const response = await request(app)
+      .post('/api/v1/stats/regression')
+      .set(...auth())
+      .send({ datasetId, kind: 'linear', responseField: 'skor_csat', predictorFields: ['jumlah_tiket'] });
+    expect(response.status).toBe(200);
+    expect(response.body.diagnostics.durbinWatson).toBeDefined();
+  });
+});
+
+/**
+ * Penyajian frontend (SECURITY.md Bagian 7 — hanya aset publik yang boleh tersaji).
+ *
+ * Pada shared hosting, berkas startup (`app.js`, `load-env.js`, `package.json`) berada
+ * di direktori aplikasi yang sama dengan `public/`. `.htaccess` menolaknya di lapis
+ * Apache, tetapi aplikasi harus menolaknya sendiri juga: pemasangan di VPS tanpa Apache
+ * tidak punya lapis itu, dan pertahanan berlapis tidak boleh bergantung pada konfigurasi
+ * server web.
+ */
+describe('Penyajian frontend & proteksi lintasan berkas', () => {
+  let webApp: Express;
+  let webDir: string;
+  let webDb: Db;
+  let webAppDir: string;
+
+  beforeAll(() => {
+    webDir = mkdtempSync(join(tmpdir(), 'vantik-web-'));
+    webAppDir = join(webDir, 'app');
+    const publicDir = join(webAppDir, 'public');
+    mkdirSync(publicDir, { recursive: true });
+    writeFileSync(join(publicDir, 'index.html'), '<!doctype html><title>Vantik</title>');
+    writeFileSync(join(publicDir, 'assets.a1b2c3d4.js'), 'console.log(1)');
+    // Berkas internal aplikasi — sejajar dengan public/, seperti tata letak deploy asli.
+    writeFileSync(join(webAppDir, 'package.json'), '{"name":"rahasia"}');
+    writeFileSync(join(webAppDir, 'load-env.js'), '// rahasia');
+
+    const created = createApp({
+      paths: { main: join(webDir, 'main.db'), audit: join(webDir, 'audit.db'), vault: join(webDir, 'vault.db') },
+    });
+    webApp = created.app;
+    webDb = created.db;
+    mountWebApp(webApp, publicDir);
+  });
+
+  afterAll(() => {
+    webDb.close();
+    rmSync(webDir, { recursive: true, force: true });
+  });
+
+  it('TC-E2E-46 — rute SPA tanpa ekstensi dilayani index.html', async () => {
+    for (const path of ['/', '/dasbor', '/analitik/uji-hipotesis', '/pengaturan/peran']) {
+      const response = await request(webApp).get(path);
+      expect(response.status, path).toBe(200);
+      expect(response.text, path).toContain('<title>Vantik</title>');
+    }
+  });
+
+  it('TC-E2E-47 — aset publik tersaji dengan cache immutable', async () => {
+    const response = await request(webApp).get('/assets.a1b2c3d4.js');
+    expect(response.status).toBe(200);
+    expect(response.headers['cache-control']).toContain('immutable');
+  });
+
+  it('TC-E2E-48 — index.html tidak boleh di-cache agar rilis baru langsung terlihat', async () => {
+    const response = await request(webApp).get('/index.html');
+    expect(response.status).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-cache');
+  });
+
+  it('TC-E2E-49 — berkas internal aplikasi tidak tersaji, dan TIDAK dijawab index.html', async () => {
+    for (const path of [
+      '/package.json',
+      '/load-env.js',
+      '/app.js',
+      '/.env',
+      '/vantik.db',
+      '/vantik.db-wal',
+      '/server/server.js',
+      '/node_modules/express/package.json',
+      '/../app/package.json',
+    ]) {
+      const response = await request(webApp).get(path);
+      expect(response.status, path).toBe(404);
+      // Menjawab index.html di sini akan menutupi kebocoran nyata dari mata penguji.
+      expect(response.text, path).not.toContain('<title>Vantik</title>');
+    }
+  });
+
+  /**
+   * Lintasan API tidak pernah jatuh ke index.html.
+   *
+   * Tanpa autentikasi, jawabannya 401 — BUKAN 404 — karena middleware autentikasi
+   * berjalan sebelum pencocokan rute. Itu memang yang diinginkan: 404 untuk rute tak
+   * dikenal dan 401 untuk rute dikenal akan memberi pemanggil anonim cara memetakan
+   * permukaan API (SECURITY.md 16.1, alasan yang sama seperti lintas-tenant → 404).
+   */
+  it('TC-E2E-50 — lintasan API menjawab JSON, bukan index.html', async () => {
+    for (const path of ['/api/v1/tidak-ada', '/api/v1/me']) {
+      const response = await request(webApp).get(path);
+      expect(response.status, path).toBe(401);
+      expect(response.body.error.key, path).toBeDefined();
+      expect(response.text, path).not.toContain('<title>Vantik</title>');
+    }
   });
 });

@@ -31,7 +31,13 @@ import { TenantService } from './tenant-service/index.ts';
 import { BillingService } from './billing-service/index.ts';
 import { MeteringService } from './metering-service/index.ts';
 import { ConnectionService, DatasetService, DataModelingService, KpiService } from './data-platform-service/index.ts';
-import { StatsService } from './stats-service/index.ts';
+import {
+  StatsService,
+  type CorrelationSpec,
+  type DescriptiveSpec,
+  type HypothesisSpec,
+  type RegressionSpec,
+} from './stats-service/index.ts';
 import {
   AiAnalyticsService,
   DiscoveryService,
@@ -541,17 +547,56 @@ export function createApp(options: AppOptions = {}): VantikApp {
 
   const statsOf = (req: Request): StatsService => new StatsService(requireContext(req));
 
+  /**
+   * Memeriksa bentuk permintaan statistik SEBELUM diteruskan ke layanan.
+   *
+   * Tanpa ini, badan permintaan yang salah bentuk (mis. `predictors` alih-alih
+   * `predictorFields`) menembus sampai ke kode numerik dan meledak sebagai
+   * TypeError — yang oleh error handler menjadi 500. Permintaan salah dari klien
+   * adalah 400: 500 menyesatkan operator (terlihat seperti server rusak) dan
+   * tidak memberi klien informasi untuk memperbaiki permintaannya.
+   */
+  function statsSpec<T>(
+    body: unknown,
+    fields: { text?: readonly string[]; list?: readonly string[] },
+  ): T {
+    if (typeof body !== 'object' || body === null) {
+      throw new ValidationError('error.validation_failed', { reason: 'body' });
+    }
+    const record = body as Record<string, unknown>;
+    for (const field of ['datasetId', ...(fields.text ?? [])]) {
+      const value = record[field];
+      if (typeof value !== 'string' || value.trim() === '') {
+        throw new ValidationError('error.validation_failed', { field });
+      }
+    }
+    for (const field of fields.list ?? []) {
+      const value = record[field];
+      if (!Array.isArray(value) || value.length === 0 || value.some((v) => typeof v !== 'string')) {
+        throw new ValidationError('error.validation_failed', { field });
+      }
+    }
+    return record as T;
+  }
+
   api.post('/stats/descriptive', (req, res) => {
-    res.json(statsOf(req).descriptive(req.body as never));
+    res.json(statsOf(req).descriptive(statsSpec<DescriptiveSpec>(req.body, { list: ['fields'] })));
   });
   api.post('/stats/hypothesis', (req, res) => {
-    res.json(statsOf(req).hypothesis(req.body as never));
+    res.json(statsOf(req).hypothesis(statsSpec<HypothesisSpec>(req.body, { text: ['test'] })));
   });
   api.post('/stats/correlation', (req, res) => {
-    res.json(statsOf(req).correlation(req.body as never));
+    res.json(statsOf(req).correlation(statsSpec<CorrelationSpec>(req.body, { list: ['fields'] })));
   });
   api.post('/stats/regression', (req, res) => {
-    res.json(statsOf(req).regression(req.body as never));
+    res.json(
+      statsOf(req).regression(
+        statsSpec<RegressionSpec>(req.body, {
+          text: ['kind', 'responseField'],
+          list: ['predictorFields'],
+        }),
+      ),
+    );
   });
 
   /* --- Digital Twin (PRD 6.17) --- */

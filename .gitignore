@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
+# Hasil `npm run package` — artefak build, disusun ulang dari sumber tiap kali.
+deploy/
 .data/
 *.db
 *.db-wal

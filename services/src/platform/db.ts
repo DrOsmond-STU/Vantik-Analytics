@@ -7,14 +7,17 @@
  *   - `vault`    — kredensial Koneksi Eksternal terenkripsi
  *
  * Ketiganya di-ATTACH ke satu koneksi agar dapat dibaca dalam satu kueri bila perlu,
- * namun tetap berkas terpisah sehingga backup/izin berkas dapat diatur berbeda.
+ * namun tetap berkas terpisah sehingga backup dan izin berkas dapat diatur berbeda.
+ *
+ * Driver SQLite dipilih saat runtime (lihat `sqlite.ts`) — penting agar aplikasi tetap
+ * dapat dipasang di shared hosting yang tidak dapat mengompilasi modul native.
  */
-import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { AUDIT_MIGRATIONS, MIGRATIONS, VAULT_MIGRATIONS, type Migration } from './schema.ts';
+import { openSqlite, type DriverPreference, type SqliteDatabase } from './sqlite.ts';
 
-export type Db = Database.Database;
+export type Db = SqliteDatabase;
 
 export interface DbPaths {
   main: string;
@@ -22,8 +25,24 @@ export interface DbPaths {
   vault: string;
 }
 
+/**
+ * Direktori data.
+ *
+ * Pada shared hosting, berkas basis data WAJIB berada di luar document root —
+ * berkas `.db` yang dapat diunduh lewat HTTP berarti seluruh isi basis data bocor,
+ * termasuk Log Aktivitas dan hash kata sandi. Default `../vantik-data` relatif
+ * terhadap direktori aplikasi memenuhi itu untuk tata letak cPanel yang lazim.
+ */
+export function resolveDataDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.VANTIK_DATA_DIR;
+  if (configured && configured.trim() !== '') {
+    return isAbsolute(configured) ? configured : resolve(process.cwd(), configured);
+  }
+  return resolve(process.cwd(), '.data');
+}
+
 export function resolveDbPaths(env: NodeJS.ProcessEnv = process.env): DbPaths {
-  const dir = env.VANTIK_DATA_DIR ?? join(process.cwd(), '.data');
+  const dir = resolveDataDir(env);
   return {
     main: join(dir, 'vantik.db'),
     audit: join(dir, 'vantik-audit.db'),
@@ -50,9 +69,9 @@ function runMigrations(db: Db, migrations: readonly Migration[], ledger: string)
 }
 
 export interface OpenDbOptions {
-  /** ':memory:' untuk pengujian — ketiga penyimpanan memakai berkas sementara terpisah. */
   paths?: DbPaths;
-  readonly?: boolean;
+  /** Memaksa driver tertentu; dipakai pengujian untuk memverifikasi kedua jalur. */
+  driver?: DriverPreference;
 }
 
 export function openDatabase(options: OpenDbOptions = {}): Db {
@@ -62,7 +81,10 @@ export function openDatabase(options: OpenDbOptions = {}): Db {
     if (p !== ':memory:') mkdirSync(dirname(p), { recursive: true });
   }
 
-  const db = new Database(paths.main);
+  const db = openSqlite(paths.main, options.driver);
+
+  // WAL memberi pembacaan bersamaan tanpa memblokir penulisan — relevan di shared
+  // hosting di mana beberapa proses Passenger dapat berbagi berkas yang sama.
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');

@@ -190,6 +190,10 @@ export const dictionary = {
   ],
   'error.account_disabled': ['Akun dinonaktifkan.', 'This account is disabled.'],
   'error.missing_credentials': ['Lengkapi email dan kata sandi.', 'Enter both email and password.'],
+  'error.validation_failed': [
+    'Permintaan tidak lengkap atau tidak sesuai format.',
+    'The request is incomplete or malformed.',
+  ],
   'error.device_not_bound': [
     'Akun ini sudah terikat perangkat lain.',
     'This account is already bound to another device.',

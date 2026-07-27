@@ -1,0 +1,30 @@
+{
+  // Konfigurasi khusus DEPLOYMENT — menghasilkan JavaScript biasa, bukan hanya typecheck.
+  //
+  // Keluaran CommonJS dipilih dengan sengaja untuk shared hosting:
+  //  - Phusion Passenger (dipakai cPanel/CloudLinux "Setup Node.js App") memuat berkas
+  //    startup lewat `require()`, yang gagal pada modul ESM;
+  //  - `better-sqlite3` adalah paket CommonJS, sehingga interopnya lebih sederhana;
+  //  - tidak bergantung pada flag eksperimental Node apa pun.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    "target": "ES2022",
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": false,
+    "sourceMap": true,
+    "removeComments": false,
+    // Impor relatif di kode sumber memakai ekstensi `.ts`; opsi ini menulisnya
+    // ulang menjadi `.js` pada keluaran (TypeScript 5.7+).
+    "rewriteRelativeImportExtensions": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": false,
+    "esModuleInterop": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["tests/**/*", "src/**/*.test.ts"]
+}

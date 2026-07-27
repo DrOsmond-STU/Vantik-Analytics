@@ -34,10 +34,42 @@ Akun demo (kata sandi sama untuk semuanya: `VantikDemo#2026`):
 Kode organisasi: `demo`.
 
 ```bash
-npm run build         # typecheck API + build web app
-npm test              # 165 test
+npm run build         # typecheck API + kompilasi ke JS + build web app
+npm test              # 172 test
 npm run test:coverage # dengan ambang cakupan
 ```
+
+---
+
+## Memasang di server
+
+### Shared hosting (cPanel / Passenger) — tanpa Docker
+
+```bash
+npm install
+npm run build      # menghasilkan services/dist (CommonJS) + frontend/web-app/dist
+npm run package    # menyusun folder deploy/ siap unggah
+```
+
+Unggah isi `deploy/` ke server, buat aplikasi Node lewat cPanel **Setup Node.js App** dengan
+berkas startup `app.js`, lalu ikuti **[docs/DEPLOY-SHARED-HOSTING.md](docs/DEPLOY-SHARED-HOSTING.md)**
+— berisi tata letak direktori, variabel lingkungan, penyediaan tenant produksi, daftar periksa
+pasca-pasang, backup, dan **batasan nyata shared hosting** yang dinyatakan terbuka.
+
+Tiga hal yang membuat pemasangan ini mungkin tanpa akses root:
+
+- **Tanpa modul native wajib.** `better-sqlite3` berstatus `optionalDependencies`; bila
+  kompilasinya gagal — hal biasa di shared hosting — aplikasi otomatis memakai `node:sqlite`
+  bawaan Node ≥ 22 (`services/src/platform/sqlite.ts`). `npm install` tetap berhasil.
+- **Keluaran CommonJS.** Passenger memuat berkas startup lewat `require()`; ESM gagal di sana.
+- **Berkas basis data di luar document root.** Default `VANTIK_DATA_DIR=../vantik-data`, dan
+  aplikasi menolak menyajikan lintasan berkas apa pun yang tidak ada di `public/` (404),
+  terlepas dari ada tidaknya `.htaccess`.
+
+### VPS / kontainer
+
+`infra/` memuat Dockerfile dan manifest Kubernetes untuk pemasangan yang punya akses root.
+Paket `deploy/` yang sama juga jalan langsung dengan `node app.js`.
 
 ---
 
@@ -66,7 +98,11 @@ vantik-analytics/
 │   └── app.ts                    # komposisi modular monolith (satu-satunya titik rakit)
 ├── frontend/web-app/             # React + Vite; 30 modul, Dark/Light, ID/EN
 ├── shared/design-tokens/         # sumber tunggal token DESIGN.md
-└── infra/                        # Dockerfile, manifest Kubernetes
+├── scripts/package-deploy.mjs    # menyusun deploy/ siap unggah ke shared hosting
+├── docs/DEPLOY-SHARED-HOSTING.md # panduan pasang cPanel/Passenger + batasannya
+└── infra/
+    ├── shared-hosting/           # .htaccess, contoh .env produksi
+    └── …                         # Dockerfile, manifest Kubernetes
 ```
 
 ---
@@ -132,6 +168,7 @@ Yang membuatnya sulit dilanggar tanpa sengaja:
 | **Objek tenant lain → 404** | Membalas 403 akan membocorkan keberadaan objek milik tenant lain. |
 | **Embed** (15) | Token ter-hash, RLS dievaluasi ulang tiap permintaan, domain whitelist di server, `frame-ancestors` per token, pencabutan berlaku pada permintaan berikutnya, tanpa ekspor. |
 | **Device binding** (17) | Fingerprint dihash **di server**; masukan klien tidak tepercaya. Toleransi kemiripan agar pembaruan browser tidak mengunci pengguna sah. |
+| **Penyajian berkas statis** (7) | Frontend dilayani berdasarkan **bentuk lintasan**, bukan daftar-tolak nama berkas: hanya lintasan tanpa ekstensi (rute SPA) yang dijawab `index.html`; permintaan berkas di luar `public/` selalu 404. Tidak bergantung pada `.htaccess`, sehingga berlaku juga di VPS tanpa Apache. |
 
 Dokumen juga menuntut kejujuran: *device fingerprint adalah pengendali komersial, bukan
 kontrol keamanan yang kuat* — karena itu ia tidak pernah menggantikan autentikasi, MFA, atau RBAC.
@@ -140,7 +177,7 @@ kontrol keamanan yang kuat* — karena itu ia tidak pernah menggantikan autentik
 
 ## Pengujian
 
-165 test, mengikuti TESTING.md. Penamaan `TC-XX-NN` mengikuti pola Bagian 3.
+172 test, mengikuti TESTING.md. Penamaan `TC-XX-NN` mengikuti pola Bagian 3.
 
 | Berkas | Cakupan |
 |---|---|
@@ -148,9 +185,9 @@ kontrol keamanan yang kuat* — karena itu ia tidak pernah menggantikan autentik
 | `tests/modules.test.ts` | TC-DS-01…08 dari PRD 6.11, DQ proporsi persis, koneksi, KPI, alert, embed, device, twin, kuota |
 | `tests/stats.test.ts` | Nilai rujukan distribusi & uji statistik; determinisme |
 | `tests/i18n.test.ts` | Paritas kunci ID/EN, nama modul tidak diterjemahkan, token Light/Dark |
-| `tests/api.e2e.test.ts` | Alur E2E lintas modul lewat HTTP, termasuk isolasi tenant di lapisan API |
+| `tests/api.e2e.test.ts` | Alur E2E lintas modul lewat HTTP, isolasi tenant di lapisan API, validasi permintaan, dan proteksi lintasan berkas saat frontend disajikan |
 
-Cakupan saat ini: **83% baris / 86% fungsi**. Ambang ditegakkan di `vitest.config.ts` dan
+Cakupan saat ini: **82,6% baris / 86% fungsi**. Ambang ditegakkan di `vitest.config.ts` dan
 memblokir merge bila turun.
 
 ---

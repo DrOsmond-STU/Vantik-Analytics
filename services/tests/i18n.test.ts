@@ -9,7 +9,17 @@
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * Akar repositori dihitung dari lokasi BERKAS INI, bukan dari `process.cwd()`.
+ *
+ * Dengan cwd, hasil uji bergantung pada direktori tempat vitest dipanggil: lulus lewat
+ * `npm test` (cwd = services/) tetapi gagal lewat `npx vitest run` dari akar repositori.
+ * Uji tidak boleh sensitif terhadap hal itu.
+ */
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 import { DICTIONARY_KEYS, dictionary, translate } from '../../frontend/web-app/src/i18n/dictionary.ts';
 import { ALL_NAV_ITEMS, NAV_GROUPS } from '../../frontend/web-app/src/app/navigation.ts';
 import { roleTokens, cssVariablesFor } from '../../shared/design-tokens/src/index.ts';
@@ -155,7 +165,7 @@ describe('Token desain Light & Dark — DESIGN.md Bagian 2 & 7', () => {
   });
 
   it('TC-THEME-04 — tokens.css mendefinisikan setiap token peran untuk kedua tema', () => {
-    const css = readFileSync(join(process.cwd(), '..', 'shared', 'design-tokens', 'src', 'tokens.css'), 'utf8');
+    const css = readFileSync(join(repoRoot, 'shared', 'design-tokens', 'src', 'tokens.css'), 'utf8');
     const lightBlock = css.slice(css.indexOf("[data-theme='light']"), css.indexOf("[data-theme='dark']"));
     const darkBlock = css.slice(css.indexOf("[data-theme='dark']"));
 
