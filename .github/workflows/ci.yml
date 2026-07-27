@@ -69,6 +69,51 @@ jobs:
         with:
           languages: javascript-typescript
       - uses: github/codeql-action/analyze@v3
+        id: codeql
+        with:
+          output: sarif-results
+
+      # Temuan diringkas ke dalam log job DAN disimpan sebagai artefak.
+      #
+      # Tanpa ini, gerbang SAST hanya memberi tahu peninjau "N temuan high" tanpa cara
+      # melihat isinya kecuali ia punya akses tab Security repositori. Gerbang yang tidak
+      # dapat dibaca tidak dapat ditindaklanjuti — dan gerbang yang tidak dapat
+      # ditindaklanjuti akhirnya diabaikan.
+      - name: Ringkas temuan SAST
+        if: always()
+        run: |
+          file=sarif-results/javascript.sarif
+          if [ ! -f "$file" ]; then echo "SARIF tidak ditemukan di $file"; exit 0; fi
+          node -e '
+            const sarif = JSON.parse(require("fs").readFileSync("sarif-results/javascript.sarif", "utf8"));
+            const run = sarif.runs[0];
+            const rules = new Map((run.tool.driver.rules ?? []).map((r) => [r.id, r]));
+            const results = run.results ?? [];
+            if (results.length === 0) { console.log("Tidak ada temuan."); process.exit(0); }
+            const byRule = new Map();
+            for (const r of results) {
+              const rule = rules.get(r.ruleId) ?? {};
+              const severity = rule.properties?.["security-severity"] ?? rule.defaultConfiguration?.level ?? "?";
+              const loc = r.locations?.[0]?.physicalLocation;
+              const where = loc ? `${loc.artifactLocation.uri}:${loc.region?.startLine ?? "?"}` : "?";
+              const key = `${r.ruleId} [severity ${severity}] ${rule.shortDescription?.text ?? ""}`;
+              if (!byRule.has(key)) byRule.set(key, []);
+              byRule.get(key).push(where);
+            }
+            console.log(`${results.length} temuan, ${byRule.size} aturan:\n`);
+            for (const [rule, places] of [...byRule].sort((a, b) => b[1].length - a[1].length)) {
+              console.log(`── ${rule} — ${places.length}x`);
+              for (const p of places) console.log(`     ${p}`);
+            }
+          '
+
+      - name: Upload SARIF
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-sarif
+          path: sarif-results/
+          retention-days: 14
 
   tenant-isolation-gate:
     name: Tenant isolation (release-blocking)
