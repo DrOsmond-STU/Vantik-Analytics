@@ -99,7 +99,9 @@ vantik-analytics/
 ├── frontend/web-app/             # React + Vite; 30 modul, Dark/Light, ID/EN
 ├── shared/design-tokens/         # sumber tunggal token DESIGN.md
 ├── scripts/package-deploy.mjs    # menyusun deploy/ siap unggah ke shared hosting
-├── docs/DEPLOY-SHARED-HOSTING.md # panduan pasang cPanel/Passenger + batasannya
+├── docs/
+│   ├── DEPLOY-SHARED-HOSTING.md  # panduan pasang cPanel/Passenger + batasannya
+│   └── SAST-TRIAGE.md            # temuan CodeQL yang tidak diperbaiki + alasannya
 └── infra/
     ├── shared-hosting/           # .htaccess, contoh .env produksi
     └── …                         # Dockerfile, manifest Kubernetes
@@ -175,6 +177,11 @@ Yang membuatnya sulit dilanggar tanpa sengaja:
 
 Dokumen juga menuntut kejujuran: *device fingerprint adalah pengendali komersial, bukan
 kontrol keamanan yang kuat* — karena itu ia tidak pernah menggantikan autentikasi, MFA, atau RBAC.
+
+Temuan SAST yang **tidak** diperbaiki dicatat beserta alasannya di
+**[docs/SAST-TRIAGE.md](docs/SAST-TRIAGE.md)** — termasuk apa yang akan mengubah keputusan
+itu. Tidak ada aturan CodeQL yang disenyapkan: menyenyapkan aturan juga menyembunyikan
+pelanggaran baru di masa depan.
 
 ---
 
