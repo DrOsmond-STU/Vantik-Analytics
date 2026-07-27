@@ -35,7 +35,7 @@ Kode organisasi: `demo`.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 241 test
+npm test              # 248 test
 npm run test:coverage # dengan ambang cakupan
 ```
 
@@ -169,6 +169,9 @@ Yang membuatnya sulit dilanggar tanpa sengaja:
 | **Embed** (15) | Token ter-hash, RLS dievaluasi ulang tiap permintaan, domain whitelist di server, `frame-ancestors` per token, pencabutan berlaku pada permintaan berikutnya, tanpa ekspor. |
 | **Device binding** (17) | Fingerprint dihash **di server**; masukan klien tidak tepercaya. Toleransi kemiripan agar pembaruan browser tidak mengunci pengguna sah. |
 | **Penyajian berkas statis** (7) | Frontend dilayani berdasarkan **bentuk lintasan**, bukan daftar-tolak nama berkas: hanya lintasan tanpa ekstensi (rute SPA) yang dijawab `index.html`; permintaan berkas di luar `public/` selalu 404. Tidak bergantung pada `.htaccess`, sehingga berlaku juga di VPS tanpa Apache. |
+| **CSRF** (4) | Cookie sesi hanya diterima untuk metode yang **tidak** mengubah keadaan; setiap penulisan wajib membawa `Authorization: Bearer`. Peramban tidak dapat menambahkan header itu pada permintaan lintas-situs tanpa lolos preflight CORS, sehingga kelas serangannya hilang — bukan hanya dipersulit oleh `SameSite=Lax`. |
+| **Keacakan** (4) | OTP pemindahan perangkat dan bagian acak seluruh ID objek berasal dari `randomInt`/`randomBytes`. `Math.random()` dapat diprediksi dari beberapa keluaran, dan OTP adalah faktor autentikasi. |
+| **Batas masukan tidak tepercaya** (7) | Panjang User-Agent, daftar font, pertanyaan AI, dan formula KPI dibatasi sebelum menyentuh regex. Di shared hosting CPU adalah kuota: satu permintaan yang memaksa penelusuran ulang polinomial dapat menghabiskan jatah seluruh situs. |
 
 Dokumen juga menuntut kejujuran: *device fingerprint adalah pengendali komersial, bukan
 kontrol keamanan yang kuat* — karena itu ia tidak pernah menggantikan autentikasi, MFA, atau RBAC.
@@ -177,7 +180,7 @@ kontrol keamanan yang kuat* — karena itu ia tidak pernah menggantikan autentik
 
 ## Pengujian
 
-241 test, mengikuti TESTING.md. Penamaan `TC-XX-NN` mengikuti pola Bagian 3.
+248 test, mengikuti TESTING.md. Penamaan `TC-XX-NN` mengikuti pola Bagian 3.
 
 | Berkas | Cakupan |
 |---|---|
@@ -189,7 +192,7 @@ kontrol keamanan yang kuat* — karena itu ia tidak pernah menggantikan autentik
 | `tests/sqlite.test.ts` | Kesetaraan **kedua** driver SQLite — jalur `node:sqlite` yang dipakai shared hosting tidak boleh berperilaku berbeda dari `better-sqlite3` |
 | `tests/billing.test.ts` | Arah upgrade/downgrade, pro-rata, kuota terlampaui, verifikasi tanda tangan webhook, dan penurunan akses bertahap akibat tunggakan |
 
-Cakupan saat ini: **84,5% baris / 85% fungsi**. Ambang ditegakkan di `vitest.config.ts` dan
+Cakupan saat ini: **84,7% baris / 85% fungsi**. Ambang ditegakkan di `vitest.config.ts` dan
 memblokir merge bila turun.
 
 ---

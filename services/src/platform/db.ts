@@ -12,6 +12,7 @@
  * Driver SQLite dipilih saat runtime (lihat `sqlite.ts`) — penting agar aplikasi tetap
  * dapat dipasang di shared hosting yang tidak dapat mengompilasi modul native.
  */
+import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { AUDIT_MIGRATIONS, MIGRATIONS, VAULT_MIGRATIONS, type Migration } from './schema.ts';
@@ -99,9 +100,17 @@ export function openDatabase(options: OpenDbOptions = {}): Db {
   return db;
 }
 
-/** ID stabil & dapat dibaca manusia untuk objek domain. */
+/**
+ * ID stabil & dapat dibaca manusia untuk objek domain.
+ *
+ * Bagian acaknya berasal dari `randomBytes`, BUKAN `Math.random()`. ID ini melekat
+ * pada objek yang berkonsekuensi — sesi, penugasan peran, permintaan pemindahan
+ * perangkat — dan `Math.random()` dapat diprediksi: keadaan internal V8 dapat
+ * direkonstruksi dari beberapa keluaran. Awalan waktu tetap dipertahankan supaya ID
+ * masih terurut kronologis dan mudah dibaca manusia saat menelusuri Log Aktivitas.
+ */
 export function newId(prefix: string): string {
-  const random = Math.random().toString(36).slice(2, 10);
+  const random = randomBytes(6).toString('base64url');
   const stamp = Date.now().toString(36);
   return `${prefix}_${stamp}${random}`;
 }

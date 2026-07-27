@@ -194,6 +194,10 @@ export const dictionary = {
     'Permintaan tidak lengkap atau tidak sesuai format.',
     'The request is incomplete or malformed.',
   ],
+  'error.formula_too_long': [
+    'Formula terlalu panjang untuk diproses.',
+    'The formula is too long to process.',
+  ],
   'error.device_not_bound': [
     'Akun ini sudah terikat perangkat lain.',
     'This account is already bound to another device.',

@@ -105,6 +105,9 @@ export interface NlqAnswer {
   intent: NlqIntent;
 }
 
+/** Panjang maksimum pertanyaan yang diproses parser intent. */
+export const MAX_QUESTION_LENGTH = 2_000;
+
 /**
  * Parser intent deterministik.
  *
@@ -113,7 +116,13 @@ export interface NlqAnswer {
  * untuk memilih dari kemungkinan yang sudah ditentukan sistem.
  */
 export function parseIntent(question: string, metrics: string[], dimensions: string[]): NlqIntent {
-  const q = question.toLowerCase();
+  // Pertanyaan dipotong sebelum disentuh regex.
+  //
+  // Beberapa pola di bawah memuat `.*` diikuti alternasi; pada masukan panjang yang
+  // tidak cocok, penelusuran ulangnya polinomial terhadap panjang masukan. Pertanyaan
+  // analitik nyata jauh di bawah batas ini, dan di shared hosting CPU adalah kuota —
+  // satu pertanyaan sepanjang megabyte tidak boleh dapat menghabiskan jatah situs.
+  const q = question.slice(0, MAX_QUESTION_LENGTH).toLowerCase();
 
   const findBest = (candidates: string[]): string | null => {
     let best: string | null = null;

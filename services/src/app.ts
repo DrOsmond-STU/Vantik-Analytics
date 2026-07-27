@@ -238,12 +238,22 @@ export function createApp(options: AppOptions = {}): VantikApp {
     res.json({ ok: true });
   });
 
-  api.post('/auth/reauthenticate', (req, res) => {
-    const ctx = requireContext(req);
-    const password = String((req.body as { password?: string }).password ?? '');
-    const ok = auth.reauthenticate(ctx.actor.sessionId, ctx.actor.userId, password);
-    res.status(ok ? 200 : 401).json({ ok });
-  });
+  // Re-autentikasi memakai batas laju setingkat LOGIN, bukan batas API umum.
+  //
+  // Endpoint ini memeriksa kata sandi, jadi ia adalah orakel kata sandi. Batas API umum
+  // (600/menit) cukup untuk membaca data, tetapi terlalu longgar untuk menebak kata
+  // sandi — dan justru endpoint inilah yang menjaga aksi paling sensitif
+  // (SECURITY.md Bagian 4 & 16.3).
+  api.post(
+    '/auth/reauthenticate',
+    loginLimiter.middleware((req) => `reauth:${req.ctx?.actor.userId ?? clientIp(req) ?? 'unknown'}`),
+    (req, res) => {
+      const ctx = requireContext(req);
+      const password = String((req.body as { password?: string }).password ?? '');
+      const ok = auth.reauthenticate(ctx.actor.sessionId, ctx.actor.userId, password);
+      res.status(ok ? 200 : 401).json({ ok });
+    },
+  );
 
   api.get('/modules', (req, res) => {
     const ctx = requireContext(req);

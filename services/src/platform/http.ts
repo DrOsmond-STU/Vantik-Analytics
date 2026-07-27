@@ -33,19 +33,36 @@ export function clientIp(req: Request): string | null {
   return req.ip ?? null;
 }
 
+/** Metode yang tidak mengubah keadaan. */
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 /**
  * Middleware autentikasi.
  *
  * `tenant_id` diambil dari SESI TERVERIFIKASI, tidak pernah dari header/query/body
  * (ARCHITECTURE.md 5.1, SECURITY.md 16.1). Header `X-Tenant-Id` yang dikirim klien
  * diabaikan sepenuhnya — bukan divalidasi, tetapi tidak pernah dibaca.
+ *
+ * Cookie sesi HANYA diterima untuk metode yang tidak mengubah keadaan; permintaan yang
+ * menulis wajib membawa `Authorization: Bearer`. Itulah pertahanan CSRF-nya, dan
+ * dipilih sebagai penghapusan kelas serangan alih-alih token CSRF: peramban tidak dapat
+ * menambahkan header Authorization pada permintaan lintas-situs tanpa lolos preflight
+ * CORS, sehingga formulir dari situs lain tidak punya jalan untuk menulis. `SameSite=Lax`
+ * pada cookie tetap dipasang, tetapi keamanan tidak boleh bergantung HANYA pada satu
+ * perilaku peramban yang bisa berbeda antar versi.
+ *
+ * Aman bagi klien resmi: web app memang sudah memakai `Authorization: Bearer`
+ * (`frontend/web-app/src/lib/api.ts`); cookie semata kemudahan untuk pemuatan halaman.
  */
 export function authenticate(deps: HttpDeps) {
   return (req: Request, _res: Response, next: NextFunction): void => {
     try {
       const header = req.headers.authorization;
-      const cookieToken = (req as Request & { cookies?: Record<string, string> }).cookies?.vantik_session;
-      const token = header?.startsWith('Bearer ') ? header.slice(7) : cookieToken;
+      const bearer = header?.startsWith('Bearer ') ? header.slice(7) : undefined;
+      const cookieToken = SAFE_METHODS.has(req.method)
+        ? (req as Request & { cookies?: Record<string, string> }).cookies?.vantik_session
+        : undefined;
+      const token = bearer ?? cookieToken;
       if (!token) throw new UnauthenticatedError();
 
       const session = deps.auth.resolveSession(token);

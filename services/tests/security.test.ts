@@ -8,9 +8,21 @@
  * TESTING.md Bagian 4: matriks pengujian negatif RBAC & Row-Level Security.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { contextFor, createHarness, createUser, provisionTenant, syntheticCsv, type Harness } from './helpers.ts';
+import {
+  contextFor,
+  createHarness,
+  createUser,
+  fingerprint,
+  provisionTenant,
+  syntheticCsv,
+  type Harness,
+} from './helpers.ts';
 import { DatasetService } from '../src/data-platform-service/datasets.ts';
+import { MAX_FORMULA_LENGTH, tokenizeFormula } from '../src/data-platform-service/modeling.ts';
 import { AuthorizationService } from '../src/identity-service/index.ts';
+import { hashComponents } from '../src/identity-service/deviceFingerprint.ts';
+import { parseIntent } from '../src/ai-engine-service/index.ts';
+import { newId } from '../src/platform/db.ts';
 import { ForbiddenError, NotFoundError } from '../src/platform/errors.ts';
 import { TenantScopedDb } from '../src/platform/tenancy.ts';
 import { can, resolvePermissions, STANDARD_ROLES } from '../src/platform/rbac.ts';
@@ -296,5 +308,108 @@ describe('Log Aktivitas immutable (SECURITY.md Bagian 9)', () => {
       /append-only/i,
     );
     expect(() => harness.db.prepare('DELETE FROM usage_events WHERE id = ?').run('use_test')).toThrow(/append-only/i);
+  });
+});
+
+/**
+ * Keacakan kriptografis pada nilai yang berkonsekuensi (SECURITY.md Bagian 4 & 17.2).
+ *
+ * `Math.random()` DAPAT DIPREDIKSI: keadaan xorshift128+ V8 dapat direkonstruksi dari
+ * beberapa keluaran. Uji di sini tidak dapat membuktikan sebuah nilai "acak", tetapi
+ * dapat menutup regresi yang nyata: bias, tabrakan, dan panjang yang salah — dan
+ * mencegah seseorang mengembalikan `Math.random()` tanpa ada yang menyadarinya.
+ */
+describe('Keacakan pada nilai sensitif', () => {
+  it('TC-RNG-01 — OTP pemindahan perangkat selalu 6 digit dan tidak berulang', () => {
+    const tenant = provisionTenant(harness);
+    const userId = createUser(harness, tenant.tenantId, 'pindah@rng.test', 'business_analyst');
+
+    const otps = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const { otp } = harness.auth.requestDeviceTransfer({
+        tenantId: tenant.tenantId,
+        userId,
+        actorLabel: 'pindah@rng.test',
+        fingerprint: fingerprint({ canvasHash: `canvas-${i}` }),
+      });
+      expect(otp).toMatch(/^\d{6}$/);
+      otps.add(otp);
+    }
+
+    // 200 undian dari 900.000 kemungkinan: tabrakan sangat tidak mungkin. Ambang 195
+    // memberi ruang bagi tabrakan wajar sekaligus menangkap generator yang rusak
+    // (mis. selalu mengembalikan nilai sama, atau rentangnya jauh lebih kecil).
+    expect(otps.size).toBeGreaterThan(195);
+  });
+
+  it('TC-RNG-02 — OTP tidak pernah keluar dari rentang 6 digit (tanpa bias pembulatan)', () => {
+    const tenant = provisionTenant(harness);
+    const userId = createUser(harness, tenant.tenantId, 'rentang@rng.test', 'business_analyst');
+
+    for (let i = 0; i < 300; i++) {
+      const { otp } = harness.auth.requestDeviceTransfer({
+        tenantId: tenant.tenantId,
+        userId,
+        actorLabel: 'rentang@rng.test',
+        fingerprint: fingerprint({ canvasHash: `c-${i}` }),
+      });
+      const value = Number(otp);
+      expect(value).toBeGreaterThanOrEqual(100_000);
+      expect(value).toBeLessThanOrEqual(999_999);
+    }
+  });
+
+  it('TC-RNG-03 — newId() tidak menghasilkan tabrakan meski dipanggil dalam satu milidetik', () => {
+    // Bagian waktu dari ID identik dalam satu milidetik, jadi keunikannya bergantung
+    // sepenuhnya pada bagian acak — persis bagian yang dulu memakai Math.random().
+    const ids = new Set<string>();
+    for (let i = 0; i < 5_000; i++) ids.add(newId('tst'));
+    expect(ids.size).toBe(5_000);
+    expect([...ids].every((id) => id.startsWith('tst_'))).toBe(true);
+  });
+});
+
+/**
+ * Batas panjang masukan tidak tepercaya sebelum menyentuh regex (SECURITY.md Bagian 7).
+ *
+ * Di shared hosting CPU adalah kuota: satu permintaan yang memaksa penelusuran ulang
+ * polinomial dapat menghabiskan jatah seluruh situs. Batas ini membuat kasus terburuk
+ * menjadi konstan, terlepas dari bentuk regexnya.
+ */
+describe('Masukan tidak tepercaya dibatasi sebelum diproses', () => {
+  it('TC-DOS-01 — User-Agent raksasa tidak memperlambat hashing fingerprint', () => {
+    // Pola yang memicu penelusuran ulang pada /\d+(\.\d+)+/.
+    const hostile = fingerprint({ userAgent: `Mozilla/${'1.'.repeat(20_000)}x` });
+
+    const started = process.hrtime.bigint();
+    const hashed = hashComponents(hostile);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+    expect(hashed.userAgent).toHaveLength(64);
+    // Ambang longgar dengan sengaja: yang diuji adalah "tidak meledak", bukan tolok ukur.
+    expect(elapsedMs).toBeLessThan(250);
+  });
+
+  it('TC-DOS-02 — daftar font raksasa dipotong, bukan diproses seluruhnya', () => {
+    const many = fingerprint({ fonts: Array.from({ length: 50_000 }, (_, i) => `Font-${i}`) });
+    const started = process.hrtime.bigint();
+    expect(hashComponents(many).fonts).toHaveLength(64);
+    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(250);
+  });
+
+  it('TC-DOS-03 — pertanyaan raksasa tidak memperlambat parser intent', () => {
+    const hostile = `kenapa naik ${'a'.repeat(200_000)}`;
+    const started = process.hrtime.bigint();
+    const intent = parseIntent(hostile, ['jumlah_tiket'], ['wilayah']);
+    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(250);
+    expect(intent).toBeDefined();
+  });
+
+  it('TC-DOS-04 — formula raksasa DITOLAK, bukan dipotong diam-diam', () => {
+    // Memotong formula akan mengubah artinya; KPI yang salah hitung lebih buruk
+    // daripada KPI yang gagal dibuat dengan pesan jelas.
+    expect(() => tokenizeFormula('1+'.repeat(MAX_FORMULA_LENGTH))).toThrow(/formula_too_long|too_long/i);
+    // Formula wajar tetap diterima.
+    expect(tokenizeFormula('SUM(jumlah_tiket) / 2').length).toBeGreaterThan(0);
   });
 });

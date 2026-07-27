@@ -53,25 +53,48 @@ export interface HashedComponents {
   [key: string]: string;
 }
 
+/**
+ * Batas panjang tiap komponen fingerprint sebelum diproses.
+ *
+ * Seluruh nilai ini berasal dari KLIEN dan tidak ada yang berukuran wajar melebihi
+ * batas ini — User-Agent browser nyata jauh di bawah 512 karakter. Tanpa batas,
+ * masukan yang dirancang khusus memaksa normalisasi regex di bawah menelusuri ulang
+ * secara polinomial; di shared hosting, CPU adalah kuota, sehingga satu permintaan
+ * dapat menghabiskan jatah seluruh situs. Memotong lebih dulu membuat kasus terburuk
+ * menjadi konstan, apa pun bentuk regexnya.
+ */
+const MAX_COMPONENT_LENGTH = 512;
+const MAX_FONTS = 128;
+
+function clamp(value: string): string {
+  return value.length > MAX_COMPONENT_LENGTH ? value.slice(0, MAX_COMPONENT_LENGTH) : value;
+}
+
 /** Menghash tiap komponen terpisah agar kemiripan dapat dinilai tanpa menyimpan atribut mentah. */
 export function hashComponents(components: FingerprintComponents): HashedComponents {
-  const normalisedFonts = [...components.fonts].map((f) => f.trim().toLowerCase()).sort().join(',');
+  const normalisedFonts = components.fonts
+    .slice(0, MAX_FONTS)
+    .map((f) => clamp(f).trim().toLowerCase())
+    .sort()
+    .join(',');
   // userAgent dinormalisasi: nomor versi dibuang agar pembaruan minor tidak mengubah hash.
-  const uaFamily = components.userAgent
+  const uaFamily = clamp(components.userAgent)
     .replace(/\d+(\.\d+)+/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
 
+  const language = clamp(components.language);
+
   return {
-    canvasHash: sha256(components.canvasHash),
-    webglHash: sha256(components.webglHash),
-    screenResolution: sha256(components.screenResolution),
-    timezone: sha256(components.timezone),
+    canvasHash: sha256(clamp(components.canvasHash)),
+    webglHash: sha256(clamp(components.webglHash)),
+    screenResolution: sha256(clamp(components.screenResolution)),
+    timezone: sha256(clamp(components.timezone)),
     fonts: sha256(normalisedFonts),
     colorDepth: sha256(String(components.colorDepth)),
-    language: sha256(components.language.split('-')[0] ?? components.language),
-    platform: sha256(components.platform ?? 'unknown'),
+    language: sha256(language.split('-')[0] ?? language),
+    platform: sha256(components.platform ? clamp(components.platform) : 'unknown'),
     userAgent: sha256(uaFamily),
   };
 }

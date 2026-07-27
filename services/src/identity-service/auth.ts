@@ -1,6 +1,7 @@
 /**
  * Autentikasi & manajemen sesi — SECURITY.md Bagian 4 & 17, PRD 6.30.
  */
+import { randomInt } from 'node:crypto';
 import type { AuditService } from '../audit-service/index.ts';
 import { newId, nowIso, type Db } from '../platform/db.ts';
 import { AppError, UnauthenticatedError, ValidationError } from '../platform/errors.ts';
@@ -597,7 +598,14 @@ export class AuthService {
     fingerprint: FingerprintComponents;
     reason?: string;
   }): { requestId: string; otp: string; expiresAt: string } {
-    const otp = String(Math.floor(100_000 + Math.random() * 900_000));
+    // OTP adalah FAKTOR AUTENTIKASI, jadi harus dari sumber acak kriptografis.
+    //
+    // `Math.random()` dapat diprediksi: keadaan xorshift128+ V8 dapat direkonstruksi
+    // dari beberapa keluaran, sehingga penyerang yang dapat memicu permintaan
+    // pemindahan miliknya sendiri berpeluang menebak OTP pengguna lain — persis pada
+    // jalur yang komentar di atas sebut "paling mungkin disalahgunakan".
+    // `randomInt` juga tidak bias, berbeda dari `Math.floor(rand * rentang)`.
+    const otp = String(randomInt(100_000, 1_000_000));
     const id = newId('dtr');
     const at = nowIso();
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();

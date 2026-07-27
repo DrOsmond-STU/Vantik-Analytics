@@ -53,12 +53,22 @@ export type FormulaToken =
 
 const ALLOWED_FUNCTIONS = new Set(['SUM', 'AVG', 'MIN', 'MAX', 'COUNT', 'ABS', 'ROUND']);
 
+/** Batas panjang formula KPI. Formula nyata jauh di bawah ini. */
+export const MAX_FORMULA_LENGTH = 4_000;
+
 /**
  * Tokeniser formula. Sengaja TIDAK memakai `eval`/`Function` — masukan pengguna
  * diperlakukan sebagai data, bukan instruksi (prinsip yang sama dengan mitigasi
  * prompt injection di SECURITY.md Bagian 11).
  */
 export function tokenizeFormula(formula: string): FormulaToken[] {
+  // Formula yang tidak wajar panjangnya DITOLAK, bukan dipotong: memotong formula akan
+  // mengubah artinya secara diam-diam, dan KPI yang dihitung dari formula terpotong
+  // lebih buruk daripada KPI yang gagal dibuat dengan pesan jelas.
+  if (formula.length > MAX_FORMULA_LENGTH) {
+    throw new ValidationError('error.formula_too_long', { max: MAX_FORMULA_LENGTH });
+  }
+
   const tokens: FormulaToken[] = [];
   const pattern = /\s*(?:(\d+(?:\.\d+)?)|([A-Za-z_][A-Za-z0-9_.]*)\s*\(|([A-Za-z_][A-Za-z0-9_.]*)|([+\-*/])|([()]))/y;
   let index = 0;
