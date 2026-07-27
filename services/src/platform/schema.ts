@@ -918,6 +918,67 @@ const REMAINING_MAIN_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_bsco_perspective ON bsc_objectives(tenant_id, perspective_id);
     `,
   },
+  {
+    // MFA berbasis TOTP (SECURITY.md Bagian 4). `mfa_enrolled` sudah ada sejak migrasi
+    // 0002 tetapi tidak pernah punya penyimpanan pendukung; ini melengkapinya.
+    //
+    // Ditambahkan sebagai migrasi TERSENDIRI, bukan dengan menyunting 0002, karena
+    // basis data yang sudah terpasang tidak menjalankan ulang migrasi yang sudah
+    // tercatat — menyunting migrasi lama hanya akan bekerja di basis data baru dan
+    // gagal senyap di basis data yang sudah berjalan (DEPLOYMENT.md Bagian 6).
+    id: '0009_mfa_totp',
+    sql: `
+      -- Rahasia disimpan terpisah dari flag mfa_enrolled supaya ada keadaan
+      -- "sudah menyiapkan rahasia tetapi BELUM diaktifkan": rahasia yang dibuat lalu
+      -- ditinggalkan tidak boleh membuat akun tiba-tiba menuntut kode.
+      ALTER TABLE system_user ADD COLUMN mfa_secret TEXT;
+      ALTER TABLE system_user ADD COLUMN mfa_activated_at TEXT;
+      -- Langkah waktu TOTP terakhir yang berhasil dipakai. Tanpa ini, kode yang
+      -- tertangkap masih dapat dipakai ulang selama jendela 30 detiknya belum lewat.
+      ALTER TABLE system_user ADD COLUMN mfa_last_counter INTEGER;
+      ALTER TABLE system_user ADD COLUMN mfa_failed_attempts INTEGER NOT NULL DEFAULT 0;
+
+      -- Kode pemulihan sekali pakai, disimpan sebagai HASH.
+      -- Kebocoran basis data tidak boleh langsung menghasilkan jalur masuk yang dapat
+      -- dipakai, sama seperti perlakuan terhadap token sesi.
+      CREATE TABLE mfa_recovery_codes (
+        id           TEXT PRIMARY KEY,
+        tenant_id    TEXT NOT NULL REFERENCES tenants(id),
+        user_id      TEXT NOT NULL REFERENCES system_user(id),
+        code_hash    TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        used_at      TEXT,
+        used_ip      TEXT
+      );
+      CREATE INDEX idx_mfa_recovery_user ON mfa_recovery_codes(tenant_id, user_id);
+      CREATE UNIQUE INDEX idx_mfa_recovery_hash ON mfa_recovery_codes(user_id, code_hash);
+
+      -- Tantangan MFA: keadaan antara "kata sandi & perangkat sudah lolos" dan
+      -- "sesi diterbitkan".
+      --
+      -- Ada sebagai tabel, bukan di memori, karena Passenger di shared hosting
+      -- menjalankan beberapa proses dan me-recycle-nya saat idle: tantangan yang
+      -- disimpan di memori akan hilang atau tidak terlihat oleh proses yang menerima
+      -- permintaan verifikasi. Token tantangan disimpan ter-hash dan terikat pada
+      -- perangkat serta IP yang memulainya.
+      CREATE TABLE mfa_challenges (
+        id               TEXT PRIMARY KEY,
+        tenant_id        TEXT NOT NULL REFERENCES tenants(id),
+        user_id          TEXT NOT NULL REFERENCES system_user(id),
+        token_hash       TEXT NOT NULL,
+        device_id        TEXT,
+        fingerprint_hash TEXT,
+        ip               TEXT,
+        geo_json         TEXT,
+        attempts         INTEGER NOT NULL DEFAULT 0,
+        issued_at        TEXT NOT NULL,
+        expires_at       TEXT NOT NULL,
+        consumed_at      TEXT
+      );
+      CREATE UNIQUE INDEX idx_mfa_challenge_token ON mfa_challenges(token_hash);
+      CREATE INDEX idx_mfa_challenge_user ON mfa_challenges(tenant_id, user_id);
+    `,
+  },
 ];
 
 /**

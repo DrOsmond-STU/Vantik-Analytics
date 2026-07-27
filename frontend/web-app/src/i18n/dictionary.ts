@@ -40,6 +40,12 @@ export const dictionary = {
   'action.unbind': ['Lepas Ikatan', 'Unbind'],
   'action.logout': ['Keluar', 'Sign Out'],
   'action.login': ['Masuk', 'Sign In'],
+  'action.verify': ['Verifikasi', 'Verify'],
+  'action.back': ['Kembali', 'Back'],
+  'action.mfa_enroll': ['Aktifkan verifikasi dua langkah', 'Set up two-step verification'],
+  'action.mfa_activate': ['Aktifkan', 'Activate'],
+  'action.mfa_disable': ['Matikan verifikasi dua langkah', 'Turn off two-step verification'],
+  'action.mfa_new_recovery_codes': ['Terbitkan kode pemulihan baru', 'Issue new recovery codes'],
   'action.copy': ['Salin', 'Copy'],
   'action.view_detail': ['Lihat Detail', 'View Detail'],
 
@@ -198,6 +204,44 @@ export const dictionary = {
     'Formula terlalu panjang untuk diproses.',
     'The formula is too long to process.',
   ],
+  'error.mfa_enrolment_required': [
+    'Peran Anda mewajibkan verifikasi dua langkah. Aktifkan dulu sebelum melanjutkan.',
+    'Your role requires two-step verification. Set it up before continuing.',
+  ],
+  'error.mfa_required_by_role': [
+    'Verifikasi dua langkah tidak dapat dimatikan untuk peran Anda.',
+    'Two-step verification cannot be turned off for your role.',
+  ],
+  'error.mfa_code_invalid': ['Kode verifikasi tidak cocok.', 'The verification code does not match.'],
+  'error.mfa_challenge_invalid': [
+    'Sesi verifikasi sudah tidak berlaku.',
+    'The verification session is no longer valid.',
+  ],
+  'error.mfa_too_many_attempts': [
+    'Terlalu banyak percobaan kode.',
+    'Too many code attempts.',
+  ],
+  'error.mfa_already_active': [
+    'Verifikasi dua langkah sudah aktif.',
+    'Two-step verification is already active.',
+  ],
+  'error.mfa_not_active': [
+    'Verifikasi dua langkah belum aktif.',
+    'Two-step verification is not active yet.',
+  ],
+  'error.mfa_not_started': [
+    'Pendaftaran verifikasi dua langkah belum dimulai.',
+    'Two-step verification setup has not been started.',
+  ],
+  'recovery.enrol_mfa': [
+    'Buka Perangkat & Sesi untuk mengaktifkan verifikasi dua langkah.',
+    'Open Devices & Sessions to set up two-step verification.',
+  ],
+  'recovery.try_code_again': [
+    'Periksa kode terbaru di aplikasi autentikator Anda.',
+    'Check the latest code in your authenticator app.',
+  ],
+  'recovery.login_again': ['Masuk kembali untuk memulai ulang.', 'Sign in again to start over.'],
   'error.device_not_bound': [
     'Akun ini sudah terikat perangkat lain.',
     'This account is already bound to another device.',
@@ -679,6 +723,29 @@ export const dictionary = {
   ],
   'ui.attribution': ['Ditenagai oleh Vantik Analytics', 'Powered by Vantik Analytics'],
   'ui.login_title': ['Masuk ke Vantik Analytics', 'Sign in to Vantik Analytics'],
+  'ui.mfa_step_title': ['Verifikasi dua langkah', 'Two-step verification'],
+  'ui.mfa_step_hint': [
+    'Masukkan kode dari aplikasi autentikator Anda, atau salah satu kode pemulihan.',
+    'Enter the code from your authenticator app, or one of your recovery codes.',
+  ],
+  'ui.mfa_code': ['Kode verifikasi', 'Verification code'],
+  'ui.mfa_code_hint': ['6 digit, berlaku 30 detik', '6 digits, valid for 30 seconds'],
+  'ui.mfa_title': ['Verifikasi Dua Langkah', 'Two-Step Verification'],
+  'ui.mfa_active': ['Verifikasi dua langkah aktif untuk akun ini.', 'Two-step verification is active on this account.'],
+  'ui.mfa_optional': [
+    'Verifikasi dua langkah belum aktif. Peran Anda tidak mewajibkannya, tetapi tetap dianjurkan.',
+    'Two-step verification is off. Your role does not require it, but it is still recommended.',
+  ],
+  'ui.mfa_scan_hint': [
+    'Tambahkan rahasia berikut ke aplikasi autentikator, lalu masukkan kode yang muncul.',
+    'Add the secret below to your authenticator app, then enter the code it shows.',
+  ],
+  'ui.mfa_uri': ['Tampilkan URI otpauth', 'Show otpauth URI'],
+  'ui.mfa_recovery_left': ['Kode pemulihan tersisa', 'Recovery codes remaining'],
+  'ui.mfa_recovery_once': [
+    'Simpan kode pemulihan ini sekarang — kode tidak akan ditampilkan lagi.',
+    'Save these recovery codes now — they will not be shown again.',
+  ],
   'ui.login_tenant': ['Kode Organisasi', 'Organisation Code'],
   'ui.login_email': ['Email', 'Email'],
   'ui.login_password': ['Kata Sandi', 'Password'],

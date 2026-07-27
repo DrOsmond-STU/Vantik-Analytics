@@ -12,7 +12,7 @@ import { AuditService } from '../src/audit-service/index.ts';
 import { openDatabase, type Db } from '../src/platform/db.ts';
 import { KeyRing } from '../src/platform/crypto.ts';
 import { RequestContext, loadFeatureFlags, toTenantInfo } from '../src/platform/context.ts';
-import { STANDARD_ROLES, type RoleCode } from '../src/platform/rbac.ts';
+import { requiresMfa, STANDARD_ROLES, type RoleCode } from '../src/platform/rbac.ts';
 import { RlsScope, type RlsRule } from '../src/platform/rls.ts';
 import { AuthService } from '../src/identity-service/auth.ts';
 import { TenantService } from '../src/tenant-service/index.ts';
@@ -98,7 +98,7 @@ export function contextFor(
   harness: Harness,
   tenantId: string,
   roleCodes: RoleCode[],
-  options: { userId?: string; rls?: RlsRule[]; freshAuth?: boolean } = {},
+  options: { userId?: string; rls?: RlsRule[]; freshAuth?: boolean; mfaEnrolled?: boolean } = {},
 ): RequestContext {
   const tenantRow = harness.db.prepare('SELECT * FROM tenants WHERE id = ?').get(tenantId) as Parameters<
     typeof toTenantInfo
@@ -134,7 +134,11 @@ export function contextFor(
       roleCodes,
       sessionId: `test-session-${userId}`,
       reauthAt: options.freshAuth === false ? null : new Date().toISOString(),
-      mfaEnrolled: true,
+      // Default mewakili pengguna yang TERPASANG BENAR: MFA aktif tepat ketika perannya
+      // mewajibkannya. Dengan begitu uji tentang dataset atau KPI tidak perlu ikut
+      // memikirkan MFA, sementara uji penegakan MFA menyatakan `mfaEnrolled: false`
+      // secara eksplisit — keadaan itu memang kekecualian, bukan keadaan normal.
+      mfaEnrolled: options.mfaEnrolled ?? requiresMfa(roleCodes),
     },
     roles,
     loadFeatureFlags(harness.db, tenant.id, tenant.status),

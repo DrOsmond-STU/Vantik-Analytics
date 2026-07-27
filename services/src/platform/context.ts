@@ -9,7 +9,7 @@ import type { AuditEntry, AuditService } from '../audit-service/index.ts';
 import type { Db } from './db.ts';
 import { ForbiddenError } from './errors.ts';
 import { FeatureFlags, PLAN_BY_CODE, type ModuleKey, type PlanDefinition } from './featureFlags.ts';
-import { can, resolvePermissions, type EffectivePermissions, type Permission } from './rbac.ts';
+import { can, requiresMfa, resolvePermissions, type EffectivePermissions, type Permission } from './rbac.ts';
 import { loadRlsScope, RlsScope } from './rls.ts';
 import { TenantScopedDb } from './tenancy.ts';
 
@@ -81,6 +81,20 @@ export class RequestContext {
    * bukan hanya dibalas 403.
    */
   require(permission: Permission, context: { module: string; objectId?: string; objectLabel?: string }): void {
+    // Penegakan MFA mendahului pemeriksaan izin.
+    //
+    // Peran yang menandai `mfaRequired` (Data Engineer, Data Steward, System Admin,
+    // Super Admin, Platform Operator) tidak boleh dipakai sebelum MFA diaktifkan.
+    // Diperiksa di SINI, bukan di setiap rute, karena satu rute yang lupa memeriksa
+    // akan membatalkan seluruh kontrolnya — pola yang sama dengan alasan `TenantScopedDb`
+    // tidak pernah memberi koneksi mentah.
+    //
+    // Endpoint pendaftaran MFA sengaja tidak memakai `require()`: ia hanya menyentuh
+    // akun pemanggil sendiri. Tanpa pengecualian itu, pengguna yang wajib MFA tetapi
+    // belum mendaftar akan terkunci total — tidak dapat bekerja DAN tidak dapat
+    // mendaftar.
+    this.requireMfaEnrolment(context.module);
+
     if (this.can(permission)) {
       if (SENSITIVE_PERMISSIONS.has(permission)) this.requireFreshAuth(permission, context.module);
       return;
@@ -98,6 +112,38 @@ export class RequestContext {
       detail: { permission, roles: this.actor.roleCodes },
     });
     throw new ForbiddenError('error.forbidden', { permission });
+  }
+
+  /** Apakah peran pengguna mewajibkan MFA sementara MFA-nya belum aktif? */
+  get mfaEnrolmentPending(): boolean {
+    return requiresMfa(this.actor.roleCodes) && !this.actor.mfaEnrolled;
+  }
+
+  /**
+   * Menolak seluruh pemakaian izin sampai MFA diaktifkan, bila peran mewajibkannya.
+   *
+   * Kuncinya 403 dengan kunci pemulihan yang JELAS, bukan 401: pengguna sudah
+   * terautentikasi dengan benar, yang kurang adalah faktor kedua. Membalas 401 akan
+   * membuat klien menganggap sesinya kedaluwarsa dan memaksa login berulang tanpa
+   * pernah memberi tahu apa yang harus dilakukan.
+   */
+  private requireMfaEnrolment(module: string): void {
+    if (!this.mfaEnrolmentPending) return;
+    this.audit.recordDenial({
+      tenantId: this.tenant.id,
+      actorUserId: this.actor.userId,
+      actorLabel: this.actor.displayName,
+      actorIp: this.ip,
+      action: 'access.mfa_enrolment_required',
+      module,
+      objectType: 'user',
+      objectId: this.actor.userId,
+      detail: { roles: this.actor.roleCodes },
+    });
+    throw new ForbiddenError('error.mfa_enrolment_required', {
+      recoveryKey: 'recovery.enrol_mfa',
+      roles: this.actor.roleCodes,
+    });
   }
 
   /** Aksi sensitif menuntut re-autentikasi dalam jendela waktu pendek. */

@@ -21,21 +21,27 @@ npm run dev      # API :4000 · web app :5173
 
 Akun demo (kata sandi sama untuk semuanya: `VantikDemo#2026`):
 
-| Email | Peran |
-|---|---|
-| `admin@demo.vantik.id` | Super Admin |
-| `rizky@demo.vantik.id` | Supervisor *(dibatasi RLS ke Wilayah Timur)* |
-| `sari@demo.vantik.id` | Manager |
-| `bagas@demo.vantik.id` | Data Engineer |
-| `maya@demo.vantik.id` | Data Steward |
-| `andi@demo.vantik.id` | Business Analyst + AI Analyst |
-| `putri@demo.vantik.id` | Auditor |
+| Email | Peran | MFA |
+|---|---|---|
+| `admin@demo.vantik.id` | Super Admin | **wajib** |
+| `rizky@demo.vantik.id` | Supervisor *(dibatasi RLS ke Wilayah Timur)* | — |
+| `sari@demo.vantik.id` | Manager | — |
+| `bagas@demo.vantik.id` | Data Engineer | **wajib** |
+| `maya@demo.vantik.id` | Data Steward | **wajib** |
+| `andi@demo.vantik.id` | Business Analyst + AI Analyst | — |
+| `putri@demo.vantik.id` | Auditor | — |
 
 Kode organisasi: `demo`.
 
+Tiga akun bertanda **wajib** dapat masuk tetapi belum berwenang apa pun sampai verifikasi
+dua langkah diaktifkan — buka **Perangkat & Sesi → Verifikasi Dua Langkah**. Itu perilaku
+yang disengaja (SECURITY.md Bagian 4), bukan kerusakan. Untuk menjelajah cepat tanpa
+menyiapkan autentikator, masuk sebagai `andi@demo.vantik.id` — peran Business Analyst +
+AI Analyst mencakup hampir seluruh modul analitik.
+
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 248 test
+npm test              # 279 test
 npm run test:coverage # dengan ambang cakupan
 ```
 
@@ -135,7 +141,7 @@ Dinyatakan terbuka, bukan disembunyikan:
   implementasi driver PostgreSQL/MySQL/Oracle/REST dipasang lewat antarmuka yang sama.
 - **Pengiriman notifikasi nyata** — `QueueOnlyTransport` mengantre tanpa mengirim;
   SMTP/WhatsApp/Telegram/SMS/Teams/Slack dipasang lewat `NotificationTransport`.
-- **SSO SAML/OIDC** — skema & kolom `auth_provider` sudah ada; alur federasi belum.
+- **SSO SAML/OIDC** — skema & kolom `auth_provider` sudah ada; alur federasi belum. (MFA berbasis TOTP **sudah** ada — lihat tabel kontrol keamanan.)
 - **Ingest MQTT** — Digital Twin menerima pembacaan sensor lewat REST; gateway MQTT belum.
 - **Ekspor PDF biner** — `renderDocument()` mengembalikan struktur dokumen; render PDF
   dilakukan di sisi klien/worker.
@@ -173,6 +179,7 @@ Yang membuatnya sulit dilanggar tanpa sengaja:
 | **Penyajian berkas statis** (7) | Frontend dilayani berdasarkan **bentuk lintasan**, bukan daftar-tolak nama berkas: hanya lintasan tanpa ekstensi (rute SPA) yang dijawab `index.html`; permintaan berkas di luar `public/` selalu 404. Tidak bergantung pada `.htaccess`, sehingga berlaku juga di VPS tanpa Apache. |
 | **CSRF** (4) | Cookie sesi hanya diterima untuk metode yang **tidak** mengubah keadaan; setiap penulisan wajib membawa `Authorization: Bearer`. Peramban tidak dapat menambahkan header itu pada permintaan lintas-situs tanpa lolos preflight CORS, sehingga kelas serangannya hilang — bukan hanya dipersulit oleh `SameSite=Lax`. |
 | **Keacakan** (4) | OTP pemindahan perangkat dan bagian acak seluruh ID objek berasal dari `randomInt`/`randomBytes`. `Math.random()` dapat diprediksi dari beberapa keluaran, dan OTP adalah faktor autentikasi. |
+| **MFA wajib per peran** (4) | Lima peran menandai `mfaRequired`; penegakannya di `RequestContext.require()`, sehingga berlaku untuk **setiap** modul tanpa tiap rute perlu mengingatnya. Sebelum MFA aktif, pemegang peran itu dapat masuk tetapi tidak berwenang apa pun. TOTP diimplementasikan di atas `node:crypto` (tanpa dependensi tambahan) dan diuji terhadap vektor resmi RFC 6238. |
 | **Batas masukan tidak tepercaya** (7) | Panjang User-Agent, daftar font, pertanyaan AI, dan formula KPI dibatasi sebelum menyentuh regex. Di shared hosting CPU adalah kuota: satu permintaan yang memaksa penelusuran ulang polinomial dapat menghabiskan jatah seluruh situs. |
 
 Dokumen juga menuntut kejujuran: *device fingerprint adalah pengendali komersial, bukan
@@ -187,7 +194,7 @@ pelanggaran baru di masa depan.
 
 ## Pengujian
 
-248 test, mengikuti TESTING.md. Penamaan `TC-XX-NN` mengikuti pola Bagian 3.
+279 test, mengikuti TESTING.md. Penamaan `TC-XX-NN` mengikuti pola Bagian 3.
 
 | Berkas | Cakupan |
 |---|---|
@@ -198,8 +205,9 @@ pelanggaran baru di masa depan.
 | `tests/api.e2e.test.ts` | Alur E2E lintas modul lewat HTTP, isolasi tenant di lapisan API, validasi permintaan, dan proteksi lintasan berkas saat frontend disajikan |
 | `tests/sqlite.test.ts` | Kesetaraan **kedua** driver SQLite — jalur `node:sqlite` yang dipakai shared hosting tidak boleh berperilaku berbeda dari `better-sqlite3` |
 | `tests/billing.test.ts` | Arah upgrade/downgrade, pro-rata, kuota terlampaui, verifikasi tanda tangan webhook, dan penurunan akses bertahap akibat tunggakan |
+| `tests/mfa.test.ts` | Vektor uji **resmi RFC 6238**, anti-replay, kode pemulihan sekali pakai, tantangan terikat perangkat, dan penegakan `mfaRequired` per peran |
 
-Cakupan saat ini: **84,7% baris / 85% fungsi**. Ambang ditegakkan di `vitest.config.ts` dan
+Cakupan saat ini: **84,6% baris / 85% fungsi**. Ambang ditegakkan di `vitest.config.ts` dan
 memblokir merge bila turun.
 
 ---

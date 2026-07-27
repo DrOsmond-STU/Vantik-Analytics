@@ -208,7 +208,45 @@ Mengikuti DEPLOYMENT.md Bagian 10 (checklist pra-peluncuran R1) dan SECURITY.md:
 - [ ] Situs dipaksa HTTPS (`.htaccess` sudah mengaturnya; pastikan sertifikat aktif)
 - [ ] Kata sandi admin default sudah diganti; seed demo tidak dijalankan di production
 - [ ] `VANTIK_MASTER_KEY` tercatat di pengelola kata sandi organisasi
+- [ ] **Verifikasi dua langkah admin sudah diaktifkan** (lihat 8.1 — wajib sebelum admin dapat bekerja)
+- [ ] **Kode pemulihan admin sudah dicetak/disimpan di luar sistem**
 - [ ] Backup `~/vantik-data/` masuk jadwal backup hosting
+
+### 8.1 Aktifkan verifikasi dua langkah SEBELUM hal lain
+
+Lima peran mewajibkan MFA: **Super Admin, Platform Operator, System Admin, Data Engineer,
+dan Data Steward** (`mfaRequired` di `services/src/platform/rbac.ts`). Pemegang peran itu
+**dapat masuk** tetapi **tidak dapat melakukan apa pun** sebelum MFA diaktifkan — setiap
+permintaan yang memakai izin dibalas `403 error.mfa_enrolment_required`. Itu memang
+disengaja, bukan kerusakan: memberi akses penuh kepada Super Admin hanya dengan kata sandi
+adalah risiko yang tidak sebanding.
+
+Langkahnya, tepat setelah login pertama:
+
+1. Buka **Perangkat & Sesi** → panel **Verifikasi Dua Langkah** → *Aktifkan*.
+2. Tambahkan rahasia yang muncul ke aplikasi autentikator (Google Authenticator, Aegis,
+   1Password, Bitwarden — apa pun yang mendukung TOTP standar). Entri manual selalu
+   tersedia; URI `otpauth://` disediakan bagi yang ingin menempelkannya.
+3. Masukkan kode 6 digit → *Aktifkan*.
+4. **Simpan sepuluh kode pemulihan yang muncul.** Kode itu ditampilkan **sekali** dan
+   setelahnya hanya hash-nya yang tersimpan — tidak ada seorang pun, termasuk operator
+   platform, yang dapat menampilkannya kembali. Cetak dan simpan di luar sistem.
+
+> **Peringatan yang perlu dibaca sebelum, bukan sesudah:** bila autentikator DAN seluruh
+> kode pemulihan hilang, akun itu tidak dapat dipulihkan dari dalam aplikasi. Pada tenant
+> yang hanya punya satu Super Admin, itu berarti tenant tanpa administrator. Karena itu:
+> sediakan **dua** akun Super Admin dengan autentikator berbeda, atau simpan kode
+> pemulihan di tempat yang benar-benar terpisah dari perangkat.
+
+Yang perlu diketahui operator:
+
+- Kode berlaku 30 detik, dengan toleransi jam ±30 detik. Bila kode selalu ditolak,
+  periksa jam perangkat pengguna — bukan jam server.
+- Satu kode tidak dapat dipakai dua kali. Login kedua dalam jendela 30 detik yang sama
+  akan ditolak; tunggu kode berikutnya.
+- Lima kali salah pada satu sesi verifikasi mematikan sesi itu (harus login ulang);
+  sepuluh kegagalan berturut-turut mengunci akun sementara.
+- Peran yang mewajibkan MFA **tidak dapat** mematikannya sendiri.
 
 ---
 

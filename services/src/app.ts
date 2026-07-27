@@ -25,8 +25,10 @@ import {
   type HttpDeps,
 } from './platform/http.ts';
 import { MODULE_KEYS } from './platform/featureFlags.ts';
+import { requiresMfa } from './platform/rbac.ts';
 
 import { AuthService, AuthorizationService, DeviceService, EmployeeService } from './identity-service/index.ts';
+import type { FingerprintComponents } from './identity-service/deviceFingerprint.ts';
 import { TenantService } from './tenant-service/index.ts';
 import { BillingService } from './billing-service/index.ts';
 import { MeteringService } from './metering-service/index.ts';
@@ -89,6 +91,40 @@ export function createApp(options: AppOptions = {}): VantikApp {
     }),
   );
 
+  /**
+   * Cookie sesi dipasang dari SATU tempat.
+   *
+   * Login dan verifikasi MFA sama-sama menerbitkan sesi; menyalin opsi cookie di dua
+   * tempat berarti suatu saat salah satunya kehilangan `httpOnly` atau `secure` tanpa
+   * ada yang menyadarinya.
+   */
+  const issueSessionCookie = (res: Response, token: string, expiresAt: string): void => {
+    res.cookie('vantik_session', token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      expires: new Date(expiresAt),
+    });
+  };
+
+  /**
+   * Fingerprint dari klien adalah MASUKAN TIDAK TEPERCAYA (SECURITY.md 17.2) — hashing
+   * dan seluruh keputusan terjadi di server. Dipusatkan agar login dan verifikasi MFA
+   * membaca bentuk yang sama; bila tidak, hash tantangan dan hash login bisa berbeda dan
+   * verifikasi selalu gagal dengan alasan yang sulit dilacak.
+   */
+  const readFingerprint = (raw: Record<string, unknown>, req: Request): FingerprintComponents => ({
+    userAgent: String(raw.userAgent ?? req.headers['user-agent'] ?? ''),
+    screenResolution: String(raw.screenResolution ?? ''),
+    colorDepth: Number(raw.colorDepth ?? 24),
+    timezone: String(raw.timezone ?? ''),
+    language: String(raw.language ?? 'id'),
+    fonts: Array.isArray(raw.fonts) ? (raw.fonts as string[]) : [],
+    canvasHash: String(raw.canvasHash ?? ''),
+    webglHash: String(raw.webglHash ?? ''),
+    platform: raw.platform ? String(raw.platform) : undefined,
+  });
+
   const loginLimiter = new RateLimiter(10, 60_000);
   const apiLimiter = new RateLimiter(600, 60_000);
   const embedLimiter = new RateLimiter(120, 60_000);
@@ -123,19 +159,7 @@ export function createApp(options: AppOptions = {}): VantikApp {
         email: body.email,
         password: body.password,
         tenantSlug: body.tenantSlug,
-        // Nilai fingerprint dari klien adalah MASUKAN TIDAK TEPERCAYA; hashing &
-        // keputusan sepenuhnya di server (SECURITY.md 17.2).
-        fingerprint: {
-          userAgent: String(body.fingerprint.userAgent ?? req.headers['user-agent'] ?? ''),
-          screenResolution: String(body.fingerprint.screenResolution ?? ''),
-          colorDepth: Number(body.fingerprint.colorDepth ?? 24),
-          timezone: String(body.fingerprint.timezone ?? ''),
-          language: String(body.fingerprint.language ?? 'id'),
-          fonts: Array.isArray(body.fingerprint.fonts) ? (body.fingerprint.fonts as string[]) : [],
-          canvasHash: String(body.fingerprint.canvasHash ?? ''),
-          webglHash: String(body.fingerprint.webglHash ?? ''),
-          platform: body.fingerprint.platform ? String(body.fingerprint.platform) : undefined,
-        },
+        fingerprint: readFingerprint(body.fingerprint, req),
         ip: clientIp(req),
         geo: body.geo ?? null,
       });
@@ -147,12 +171,63 @@ export function createApp(options: AppOptions = {}): VantikApp {
         return;
       }
 
-      res.cookie('vantik_session', result.token, {
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
-        expires: new Date(result.expiresAt),
+      // Faktor kedua belum selesai: TIDAK ada cookie sesi dan tidak ada token sesi yang
+      // dikembalikan. Sampai kode terverifikasi, pemanggil tidak punya kewenangan apa pun.
+      if (result.kind === 'mfa_required') {
+        res.status(200).json({
+          mfaRequired: true,
+          challengeToken: result.challengeToken,
+          expiresAt: result.expiresAt,
+          recoveryAccepted: result.recoveryAccepted,
+        });
+        return;
+      }
+
+      issueSessionCookie(res, result.token, result.expiresAt);
+      res.json({
+        token: result.token,
+        expiresAt: result.expiresAt,
+        deviceRegistered: result.deviceRegistered,
       });
+    }),
+  );
+
+  /**
+   * Langkah kedua login.
+   *
+   * Memakai batas laju setingkat login dan berkunci pada token tantangan: batas
+   * per-tantangan sudah ditegakkan di dalam AuthService, dan ini menambah batas
+   * per-pemanggil supaya penyerang tidak dapat memutar banyak tantangan sekaligus.
+   */
+  app.post(
+    '/api/v1/auth/mfa/verify',
+    loginLimiter.middleware((req) => `mfa:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute((req, res) => {
+      const body = req.body as {
+        challengeToken?: string;
+        code?: string;
+        fingerprint?: Record<string, unknown>;
+      };
+      if (!body.challengeToken || !body.code || !body.fingerprint) {
+        throw new ValidationError('error.missing_credentials');
+      }
+
+      const result = auth.verifyMfaChallenge({
+        challengeToken: body.challengeToken,
+        code: String(body.code),
+        fingerprint: readFingerprint(body.fingerprint, req),
+        ip: clientIp(req),
+      });
+
+      if (result.kind !== 'ok') {
+        const rejected = result as { reasonKey?: string; recoveryKey?: string };
+        res.status(401).json({
+          error: { key: rejected.reasonKey ?? 'error.mfa_code_invalid', recoveryKey: rejected.recoveryKey ?? null },
+        });
+        return;
+      }
+
+      issueSessionCookie(res, result.token, result.expiresAt);
       res.json({
         token: result.token,
         expiresAt: result.expiresAt,
@@ -230,6 +305,107 @@ export function createApp(options: AppOptions = {}): VantikApp {
     }
     res.json({ ok: true, ...updates });
   });
+
+  /* --- MFA: pendaftaran & pengelolaan (SECURITY.md Bagian 4) --- */
+  //
+  // Rute-rute ini SENGAJA tidak memanggil `ctx.require(...)`: seluruhnya hanya menyentuh
+  // akun pemanggil sendiri, dan izin apa pun akan ditolak oleh penegakan MFA di
+  // `RequestContext` selama MFA belum aktif. Tanpa pengecualian ini, pengguna dengan
+  // peran yang mewajibkan MFA akan terkunci total — tidak dapat bekerja DAN tidak dapat
+  // mendaftar. Pemeriksaan modul pun tidak dipakai: MFA bukan fitur berbayar.
+
+  api.get('/mfa/status', (req, res) => {
+    const ctx = requireContext(req);
+    res.json({
+      ...auth.mfaStatus(ctx.tenant.id, ctx.actor.userId),
+      requiredByRole: ctx.mfaEnrolmentPending || ctx.actor.mfaEnrolled,
+      enrolmentPending: ctx.mfaEnrolmentPending,
+    });
+  });
+
+  api.post('/mfa/enroll', (req, res) => {
+    const ctx = requireContext(req);
+    const result = auth.beginMfaEnrolment({
+      tenantId: ctx.tenant.id,
+      userId: ctx.actor.userId,
+      // Nama penerbit mengikuti merek tenant bila di-white-label (BRAND.md Bagian 1),
+      // supaya entri di aplikasi autentikator dapat dikenali pengguna.
+      issuer: ctx.tenant.logoText ?? ctx.tenant.name,
+    });
+    if (result.alreadyActive) {
+      res.status(409).json({ error: { key: 'error.mfa_already_active', detail: null } });
+      return;
+    }
+    res.json(result);
+  });
+
+  api.post(
+    '/mfa/activate',
+    loginLimiter.middleware((req) => `mfa-activate:${req.ctx?.actor.userId ?? clientIp(req) ?? 'unknown'}`),
+    (req, res) => {
+      const ctx = requireContext(req);
+      const code = String((req.body as { code?: string }).code ?? '');
+      const result = auth.activateMfa({
+        tenantId: ctx.tenant.id,
+        userId: ctx.actor.userId,
+        code,
+        ip: ctx.ip,
+      });
+      if (!result.activated) {
+        res.status(400).json({ error: { key: result.reasonKey ?? 'error.mfa_code_invalid', detail: null } });
+        return;
+      }
+      // Kode pemulihan hanya muncul SEKALI di sini. Setelah respons ini hanya hash-nya
+      // yang tersimpan, jadi klien wajib menampilkannya untuk dicatat pengguna.
+      res.json({ activated: true, recoveryCodes: result.recoveryCodes });
+    },
+  );
+
+  api.post(
+    '/mfa/disable',
+    loginLimiter.middleware((req) => `mfa-disable:${req.ctx?.actor.userId ?? clientIp(req) ?? 'unknown'}`),
+    (req, res) => {
+      const ctx = requireContext(req);
+      // Peran yang mewajibkan MFA tidak boleh melepasnya. Pemeriksaan ada di sini karena
+      // di sinilah peran pemanggil diketahui; AuthService sengaja tidak tahu soal peran.
+      if (requiresMfa(ctx.actor.roleCodes)) {
+        res.status(403).json({
+          error: { key: 'error.mfa_required_by_role', detail: { roles: ctx.actor.roleCodes } },
+        });
+        return;
+      }
+      const result = auth.disableMfa({
+        tenantId: ctx.tenant.id,
+        userId: ctx.actor.userId,
+        code: String((req.body as { code?: string }).code ?? ''),
+        ip: ctx.ip,
+      });
+      if (!result.disabled) {
+        res.status(400).json({ error: { key: result.reasonKey ?? 'error.mfa_code_invalid', detail: null } });
+        return;
+      }
+      res.json({ disabled: true });
+    },
+  );
+
+  api.post(
+    '/mfa/recovery-codes',
+    loginLimiter.middleware((req) => `mfa-recovery:${req.ctx?.actor.userId ?? clientIp(req) ?? 'unknown'}`),
+    (req, res) => {
+      const ctx = requireContext(req);
+      const result = auth.regenerateRecoveryCodes({
+        tenantId: ctx.tenant.id,
+        userId: ctx.actor.userId,
+        code: String((req.body as { code?: string }).code ?? ''),
+        ip: ctx.ip,
+      });
+      if (result.codes.length === 0) {
+        res.status(400).json({ error: { key: result.reasonKey ?? 'error.mfa_code_invalid', detail: null } });
+        return;
+      }
+      res.json({ recoveryCodes: result.codes });
+    },
+  );
 
   api.post('/auth/logout', (req, res) => {
     const ctx = requireContext(req);

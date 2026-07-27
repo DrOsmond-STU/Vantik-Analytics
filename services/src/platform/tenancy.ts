@@ -31,6 +31,8 @@ export const TENANT_SCOPED_TABLES = new Set([
   'device_bindings',
   'active_sessions',
   'device_transfer_requests',
+  'mfa_recovery_codes',
+  'mfa_challenges',
   'dataset_catalog',
   'dataset_columns',
   'dataset_rows',

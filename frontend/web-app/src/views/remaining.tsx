@@ -4,7 +4,7 @@
  */
 import { useState } from 'react';
 import { useApp } from '../app/AppContext.tsx';
-import { api, ApiError, type AuditRow, type Dataset, type KpiSummary } from '../lib/api.ts';
+import { api, ApiError, type AuditRow, type Dataset, type KpiSummary, type MfaStatus } from '../lib/api.ts';
 import { useAsync } from '../lib/useAsync.ts';
 import {
   formatAuditTimestamp, formatBytes, formatCurrency, formatDate, formatDateTime,
@@ -1002,6 +1002,167 @@ export function AuditLogView(): JSX.Element {
 
 /* ================= Perangkat & Sesi — PRD 6.30 ================= */
 
+/**
+ * Verifikasi dua langkah (SECURITY.md Bagian 4).
+ *
+ * Ditempatkan di modul Perangkat & Sesi karena di situlah pengguna mengelola cara
+ * akunnya diakses. Panel ini WAJIB dapat dipakai justru ketika peran pengguna sudah
+ * memblokir segalanya karena MFA belum aktif — karena itu ia tidak bergantung pada izin
+ * apa pun, dan `PageHead` di sekelilingnya tetap tampil meski panel lain gagal memuat.
+ */
+function MfaPanel(): JSX.Element {
+  const { t, locale, refreshSession } = useApp();
+  const status = useAsync(() => api.get<MfaStatus>('/mfa/status'), []);
+  const [setup, setSetup] = useState<{ secret: string; otpauthUri: string } | null>(null);
+  const [code, setCode] = useState('');
+  const [codes, setCodes] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [errorKey, setErrorKey] = useState<string | null>(null);
+
+  async function run(action: () => Promise<void>): Promise<void> {
+    setBusy(true);
+    setErrorKey(null);
+    try {
+      await action();
+    } catch (error) {
+      setErrorKey(error instanceof ApiError ? error.key : 'error.internal');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const begin = (): Promise<void> =>
+    run(async () => {
+      setSetup(await api.post<{ secret: string; otpauthUri: string }>('/mfa/enroll', {}));
+    });
+
+  const activate = (): Promise<void> =>
+    run(async () => {
+      const result = await api.post<{ activated: boolean; recoveryCodes: string[] }>('/mfa/activate', { code });
+      setCodes(result.recoveryCodes);
+      setSetup(null);
+      setCode('');
+      status.reload();
+      // Sesi memuat `mfaEnrolled`; tanpa memuat ulang, antarmuka tetap menganggap
+      // pengguna terkunci walaupun MFA-nya baru saja aktif.
+      await refreshSession();
+    });
+
+  return (
+    <Panel title={t('ui.mfa_title')} span="half">
+      <ViewState state={status}>
+        {(data) => (
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div className={data.enrolmentPending ? 'note warn' : 'note'}>
+              {data.enrolled
+                ? t('ui.mfa_active')
+                : data.enrolmentPending
+                  ? t('error.mfa_enrolment_required')
+                  : t('ui.mfa_optional')}
+            </div>
+
+            {data.enrolled && (
+              <div style={{ fontSize: 12.5, color: 'var(--text-600)' }}>
+                {t('ui.mfa_recovery_left')}: <strong>{data.remainingRecoveryCodes}</strong>
+              </div>
+            )}
+
+            {/* Kode pemulihan tampil SEKALI. Setelah ini hanya hash-nya tersimpan. */}
+            {codes && (
+              <div className="note warn">
+                <div style={{ marginBottom: 8 }}>{t('ui.mfa_recovery_once')}</div>
+                <div className="mono" style={{ display: 'grid', gap: 2 }}>
+                  {codes.map((c) => (
+                    <span key={c}>{c}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {!data.enrolled && !setup && (
+              <button type="button" className="btn primary" disabled={busy} onClick={() => void begin()}>
+                {busy ? t('ui.loading') : t('action.mfa_enroll')}
+              </button>
+            )}
+
+            {setup && (
+              <div style={{ display: 'grid', gap: 10 }}>
+                <div style={{ fontSize: 12.5, color: 'var(--text-600)' }}>{t('ui.mfa_scan_hint')}</div>
+                {/* Rahasia ditampilkan sebagai teks, bukan gambar QR: merender QR menuntut
+                    pustaka tambahan, dan seluruh aplikasi autentikator menerima entri
+                    manual. URI otpauth disertakan untuk yang ingin menempelkannya. */}
+                <div className="mono" style={{ wordBreak: 'break-all', fontSize: 13 }}>{setup.secret}</div>
+                <details>
+                  <summary style={{ fontSize: 12.5, cursor: 'pointer' }}>{t('ui.mfa_uri')}</summary>
+                  <div className="mono" style={{ wordBreak: 'break-all', fontSize: 11.5, marginTop: 6 }}>
+                    {setup.otpauthUri}
+                  </div>
+                </details>
+                <Field label={t('ui.mfa_code')} hint={t('ui.mfa_code_hint')}>
+                  <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" />
+                </Field>
+                <button type="button" className="btn primary" disabled={busy || code.length === 0} onClick={() => void activate()}>
+                  {busy ? t('ui.loading') : t('action.mfa_activate')}
+                </button>
+              </div>
+            )}
+
+            {data.enrolled && (
+              <div style={{ display: 'grid', gap: 8 }}>
+                <Field label={t('ui.mfa_code')} hint={t('ui.mfa_code_hint')}>
+                  <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" />
+                </Field>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy || code.length === 0}
+                  onClick={() =>
+                    void run(async () => {
+                      const result = await api.post<{ recoveryCodes: string[] }>('/mfa/recovery-codes', { code });
+                      setCodes(result.recoveryCodes);
+                      setCode('');
+                      status.reload();
+                    })
+                  }
+                >
+                  {t('action.mfa_new_recovery_codes')}
+                </button>
+                {/* Tombol matikan hanya muncul bila peran TIDAK mewajibkannya — menampilkan
+                    tombol yang pasti ditolak server hanya membingungkan. */}
+                {!data.requiredByRole && (
+                  <button
+                    type="button"
+                    className="btn danger"
+                    disabled={busy || code.length === 0}
+                    onClick={() =>
+                      void run(async () => {
+                        await api.post('/mfa/disable', { code });
+                        setCode('');
+                        setCodes(null);
+                        status.reload();
+                        await refreshSession();
+                      })
+                    }
+                  >
+                    {t('action.mfa_disable')}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {errorKey && <div className="note warn">{t(errorKey)}</div>}
+            <div style={{ fontSize: 11.5, color: 'var(--text-600)' }}>
+              {locale === 'id'
+                ? 'Kode berlaku 30 detik dan tidak dapat dipakai dua kali.'
+                : 'Codes last 30 seconds and cannot be reused.'}
+            </div>
+          </div>
+        )}
+      </ViewState>
+    </Panel>
+  );
+}
+
 export function DeviceView(): JSX.Element {
   const { t, locale, can } = useApp();
   const mine = useAsync(() => api.get<{ devices: Array<{ id: string; label: string | null; first_seen: string; last_seen: string; status: string; current: boolean }> }>('/devices/mine'), []);
@@ -1012,6 +1173,7 @@ export function DeviceView(): JSX.Element {
     <div className="view-enter">
       <PageHead title="Perangkat & Sesi" subtitle={locale === 'id' ? 'Satu akun terikat perangkat terdaftar; satu sesi aktif per akun' : 'Accounts bound to registered devices; one active session per account'} />
       <div className="grid g-12">
+        <MfaPanel />
         {/* Transparansi WAJIB — data perangkat termasuk data pribadi (SECURITY.md 17.3). */}
         <Panel title={t('ui.my_devices')} span="half">
           <ViewState state={mine}>

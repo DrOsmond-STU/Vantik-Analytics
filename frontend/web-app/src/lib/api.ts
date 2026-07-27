@@ -80,16 +80,37 @@ export const api = {
     request<T>(path, { method: 'PATCH', body: body === undefined ? undefined : JSON.stringify(body) }),
   delete: <T>(path: string): Promise<T> => request<T>(path, { method: 'DELETE' }),
 
+  /**
+   * Login langkah pertama.
+   *
+   * Bila peran pengguna memakai verifikasi dua langkah, server menjawab
+   * `mfaRequired` TANPA token sesi — jadi tidak ada token yang disimpan di sini.
+   * Pemanggil wajib melanjutkan ke `verifyMfa()`.
+   */
   async login(input: {
     email: string;
     password: string;
     tenantSlug?: string;
     fingerprint: FingerprintComponents;
-  }): Promise<{ token: string; expiresAt: string; deviceRegistered: boolean }> {
-    const result = await request<{ token: string; expiresAt: string; deviceRegistered: boolean }>('/auth/login', {
+  }): Promise<LoginOutcome> {
+    const result = await request<LoginOutcome>('/auth/login', {
       method: 'POST',
       body: JSON.stringify(input),
     });
+    if ('token' in result) setToken(result.token);
+    return result;
+  },
+
+  /** Login langkah kedua: kode autentikator ATAU kode pemulihan. */
+  async verifyMfa(input: {
+    challengeToken: string;
+    code: string;
+    fingerprint: FingerprintComponents;
+  }): Promise<{ token: string; expiresAt: string; deviceRegistered: boolean }> {
+    const result = await request<{ token: string; expiresAt: string; deviceRegistered: boolean }>(
+      '/auth/mfa/verify',
+      { method: 'POST', body: JSON.stringify(input) },
+    );
     setToken(result.token);
     return result;
   },
@@ -104,6 +125,24 @@ export const api = {
 };
 
 /* ---------------- Bentuk data yang dipakai antarmuka ---------------- */
+
+/**
+ * Dua kemungkinan hasil login. Dibuat sebagai union, bukan satu objek dengan medan
+ * opsional, supaya TypeScript memaksa antarmuka menangani kasus MFA — bukan
+ * mengandalkan pengembang mengingatnya.
+ */
+export type LoginOutcome =
+  | { token: string; expiresAt: string; deviceRegistered: boolean }
+  | { mfaRequired: true; challengeToken: string; expiresAt: string; recoveryAccepted: boolean };
+
+export interface MfaStatus {
+  enrolled: boolean;
+  activatedAt: string | null;
+  secretPending: boolean;
+  remainingRecoveryCodes: number;
+  requiredByRole: boolean;
+  enrolmentPending: boolean;
+}
 
 export interface Session {
   user: {

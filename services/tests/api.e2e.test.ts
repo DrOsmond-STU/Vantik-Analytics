@@ -15,6 +15,8 @@ import type { Express } from 'express';
 import { createApp } from '../src/app.ts';
 import { mountWebApp } from '../src/server.ts';
 import { fingerprint, syntheticCsv, TEST_PASSWORD } from './helpers.ts';
+import { totpCode, totpCounter } from '../src/platform/totp.ts';
+import type { AuthService } from '../src/identity-service/auth.ts';
 import type { Db } from '../src/platform/db.ts';
 
 let app: Express;
@@ -22,17 +24,49 @@ let db: Db;
 let dir: string;
 let token: string;
 let secondTenantToken: string;
+let authService: AuthService;
+/** Rahasia MFA admin kedua, dipakai uji yang login ulang sebagai pengguna itu. */
+let secondAdminSecret: string;
 let datasetId: string;
 let kpiId: string;
 
 const currentPeriod = new Date().toISOString().slice(0, 7);
 
-async function login(email: string, slug: string): Promise<string> {
+/**
+ * Login lewat HTTP, menyelesaikan langkah MFA bila diminta.
+ *
+ * Admin tenant memegang peran `super_admin`, yang menandai `mfaRequired` — jadi alur
+ * dua langkah adalah jalur NORMAL bagi pengguna ini, bukan kasus tepi. Helper ini
+ * dengan sengaja melewati keduanya lewat HTTP, sehingga setiap uji E2E lain berjalan di
+ * atas sesi yang benar-benar terbit setelah faktor kedua lolos.
+ */
+async function login(email: string, slug: string, secret?: string): Promise<string> {
   const response = await request(app)
     .post('/api/v1/auth/login')
     .send({ email, password: TEST_PASSWORD, tenantSlug: slug, fingerprint: fingerprint() });
   expect(response.status).toBe(200);
-  return response.body.token as string;
+
+  if (!response.body.mfaRequired) return response.body.token as string;
+
+  expect(secret, `login ${email} menuntut MFA tetapi rahasianya tidak diberikan`).toBeTruthy();
+  // Langkah waktu berikutnya: langkah saat ini sudah terpakai saat aktivasi, dan
+  // anti-replay menolaknya dipakai dua kali.
+  const verified = await request(app)
+    .post('/api/v1/auth/mfa/verify')
+    .send({
+      challengeToken: response.body.challengeToken,
+      code: totpCode(secret!, totpCounter() + 1),
+      fingerprint: fingerprint(),
+    });
+  expect(verified.status, JSON.stringify(verified.body)).toBe(200);
+  return verified.body.token as string;
+}
+
+/** Mengaktifkan MFA untuk sebuah pengguna, seperti yang wajib dilakukan admin sungguhan. */
+function enrolMfa(tenantId: string, userId: string): string {
+  const { secret } = authService.beginMfaEnrolment({ tenantId, userId });
+  expect(authService.activateMfa({ tenantId, userId, code: totpCode(secret) }).activated).toBe(true);
+  return secret;
 }
 
 beforeAll(async () => {
@@ -42,6 +76,7 @@ beforeAll(async () => {
   });
   app = created.app;
   db = created.db;
+  authService = created.auth;
 
   created.tenants.provision(
     {
@@ -64,8 +99,22 @@ beforeAll(async () => {
     'test',
   );
 
-  token = await login('admin@e2e.test', 'e2edemo');
-  secondTenantToken = await login('admin@other.test', 'e2eother');
+  // Admin tenant adalah `super_admin`, yang mewajibkan MFA. Mendaftarkannya di sini
+  // meniru langkah pertama yang WAJIB dilakukan administrator sungguhan setelah
+  // pemasangan; tanpa itu, perannya benar tetapi tidak berwenang apa pun.
+  const first = created.db.prepare("SELECT id, tenant_id FROM system_user WHERE email = 'admin@e2e.test'").get() as {
+    id: string;
+    tenant_id: string;
+  };
+  const second = created.db.prepare("SELECT id, tenant_id FROM system_user WHERE email = 'admin@other.test'").get() as {
+    id: string;
+    tenant_id: string;
+  };
+  const firstSecret = enrolMfa(first.tenant_id, first.id);
+  secondAdminSecret = enrolMfa(second.tenant_id, second.id);
+
+  token = await login('admin@e2e.test', 'e2edemo', firstSecret);
+  secondTenantToken = await login('admin@other.test', 'e2eother', secondAdminSecret);
 });
 
 afterAll(() => {
@@ -841,13 +890,20 @@ describe('Isolasi tenant lewat HTTP (memblokir rilis)', () => {
     expect(foreign).toHaveLength(0);
   });
 
+  /**
+   * Memakai sesi tenant kedua yang SUDAH ADA, bukan login ulang.
+   *
+   * Login ulang di uji ini dulu gagal, dan kegagalannya benar: satu pengguna hanya dapat
+   * menyelesaikan MFA sekali per langkah waktu 30 detik — anti-replay menolak kode yang
+   * langkah waktunya sudah terpakai. Uji ini adalah yang terakhir memakai token itu,
+   * jadi mencabutnya di sini tidak mengganggu uji lain.
+   */
   it('TC-E2E-43 — logout mencabut sesi; permintaan berikutnya ditolak', async () => {
-    const throwaway = await login('admin@other.test', 'e2eother');
-    const before = await request(app).get('/api/v1/me').set('Authorization', `Bearer ${throwaway}`);
+    const before = await request(app).get('/api/v1/me').set('Authorization', `Bearer ${secondTenantToken}`);
     expect(before.status).toBe(200);
 
-    await request(app).post('/api/v1/auth/logout').set('Authorization', `Bearer ${throwaway}`);
-    const after = await request(app).get('/api/v1/me').set('Authorization', `Bearer ${throwaway}`);
+    await request(app).post('/api/v1/auth/logout').set('Authorization', `Bearer ${secondTenantToken}`);
+    const after = await request(app).get('/api/v1/me').set('Authorization', `Bearer ${secondTenantToken}`);
     expect(after.status).toBe(401);
   });
 

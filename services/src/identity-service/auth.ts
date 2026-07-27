@@ -14,6 +14,13 @@ import {
   sha256,
 } from '../platform/crypto.ts';
 import {
+  generateMfaSecret,
+  generateRecoveryCodes,
+  normaliseRecoveryCode,
+  otpauthUri,
+  verifyTotp,
+} from '../platform/totp.ts';
+import {
   assessTravel,
   DEFAULT_SIMILARITY_THRESHOLD,
   fingerprintHash,
@@ -63,7 +70,37 @@ export interface LoginRejected {
   retryAfter?: string;
 }
 
-export type LoginResult = LoginSuccess | LoginRejected;
+/**
+ * Kata sandi & perangkat sudah lolos, tetapi faktor kedua belum.
+ *
+ * Sengaja TIDAK memuat sesi, token sesi, atau apa pun yang dapat memanggil API: sampai
+ * kode terverifikasi, pemanggil tidak memiliki kewenangan apa pun. `challengeToken`
+ * hanya berguna untuk satu hal, yaitu menyelesaikan langkah kedua.
+ */
+export interface LoginMfaRequired {
+  kind: 'mfa_required';
+  challengeToken: string;
+  expiresAt: string;
+  /** Memberi tahu klien bahwa kode pemulihan juga diterima di kolom yang sama. */
+  recoveryAccepted: true;
+}
+
+export type LoginResult = LoginSuccess | LoginRejected | LoginMfaRequired;
+
+/** Masa hidup tantangan MFA. Cukup untuk membuka aplikasi autentikator, tidak lebih. */
+export const MFA_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Batas percobaan kode per tantangan.
+ *
+ * Kode 6 digit hanya punya 10⁶ kemungkinan, jadi batasnya harus per-tantangan, bukan
+ * hanya per-satuan waktu: tanpa ini penyerang dapat menebak berkali-kali pada satu
+ * tantangan yang masih hidup. Habis percobaan → tantangan mati, harus login ulang.
+ */
+export const MFA_MAX_CHALLENGE_ATTEMPTS = 5;
+
+/** Kegagalan MFA berturut-turut yang mengunci akun, sejalan dengan kebijakan kata sandi. */
+export const MFA_LOCKOUT_THRESHOLD = 10;
 
 interface UserRow {
   id: string;
@@ -76,6 +113,9 @@ interface UserRow {
   locked_until: string | null;
   password_history_json: string;
   mfa_enrolled: number;
+  mfa_secret: string | null;
+  mfa_last_counter: number | null;
+  mfa_failed_attempts: number;
 }
 
 interface DeviceRow {
@@ -175,6 +215,39 @@ export class AuthService {
     // menutup tab di sisi klien.
     this.revokeSessionsForUser(user.tenant_id, user.id, 'superseded_by_new_login');
 
+    // --- Faktor kedua (SECURITY.md Bagian 4) ------------------------
+    //
+    // Bila MFA sudah aktif, sesi TIDAK diterbitkan di sini. Yang diterbitkan adalah
+    // tantangan berumur pendek; kata sandi tidak perlu dikirim ulang pada langkah
+    // kedua, dan tidak ada keadaan setengah-masuk yang dapat memanggil API.
+    if (user.mfa_enrolled === 1 && user.mfa_secret) {
+      return this.issueMfaChallenge(user, email, deviceOutcome.deviceId, input, at);
+    }
+
+    return this.issueSession(user, email, deviceOutcome, input.ip ?? null, input.geo ?? null, at, {
+      mfaUsed: null,
+    });
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Penerbitan sesi                                                   */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Dipisah dari `login()` supaya jalur "kata sandi saja" dan jalur "kata sandi + MFA"
+   * menerbitkan sesi dengan cara yang IDENTIK. Menduplikasi blok ini akan membuat kedua
+   * jalur bisa menyimpang — mis. satu lupa menyetel `reauth_at` atau lupa mereset
+   * penghitung kegagalan.
+   */
+  private issueSession(
+    user: UserRow,
+    email: string,
+    deviceOutcome: { deviceId: string; registered: boolean },
+    ip: string | null,
+    geo: { lat: number; lon: number; label?: string } | null,
+    at: string,
+    options: { mfaUsed: 'totp' | 'recovery_code' | null },
+  ): LoginSuccess {
     const token = generateToken();
     const sessionId = newId('ses');
     const expiresAt = new Date(Date.now() + SESSION_LIFETIME_MS).toISOString();
@@ -195,26 +268,26 @@ export class AuthService {
         at,
         expiresAt,
         at,
-        input.ip ?? null,
-        input.geo?.lat ?? null,
-        input.geo?.lon ?? null,
-        input.geo?.label ?? null,
+        ip,
+        geo?.lat ?? null,
+        geo?.lon ?? null,
+        geo?.label ?? null,
         at, // login menghitung sebagai autentikasi segar
       );
 
     this.db
       .prepare(
-        `UPDATE system_user SET failed_attempts = 0, locked_until = NULL,
+        `UPDATE system_user SET failed_attempts = 0, locked_until = NULL, mfa_failed_attempts = 0,
                                 last_login_at = ?, updated_at = ? WHERE id = ?`,
       )
       .run(at, at, user.id);
 
-    this.recordAttempt(user.tenant_id, email, input.ip, 'success', input.geo);
+    this.recordAttempt(user.tenant_id, email, ip, 'success', geo);
     this.audit.record({
       tenantId: user.tenant_id,
       actorUserId: user.id,
       actorLabel: email,
-      actorIp: input.ip ?? null,
+      actorIp: ip,
       action: 'auth.login',
       module: 'Otorisasi User',
       objectType: 'session',
@@ -222,6 +295,9 @@ export class AuthService {
       detail: {
         deviceId: deviceOutcome.deviceId,
         deviceRegistered: deviceOutcome.registered,
+        // Dicatat supaya Auditor dapat membedakan masuk dengan autentikator dari
+        // masuk dengan kode pemulihan — yang kedua layak ditinjau.
+        mfa: options.mfaUsed,
       },
     });
 
@@ -235,6 +311,476 @@ export class AuthService {
       deviceId: deviceOutcome.deviceId,
       deviceRegistered: deviceOutcome.registered,
     };
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* MFA — TOTP (SECURITY.md Bagian 4)                                 */
+  /* ---------------------------------------------------------------- */
+
+  /** Langkah kedua login: menerbitkan tantangan, bukan sesi. */
+  private issueMfaChallenge(
+    user: UserRow,
+    email: string,
+    deviceId: string,
+    input: LoginInput,
+    at: string,
+  ): LoginMfaRequired {
+    // Tantangan lama pengguna ini dimatikan lebih dulu. Membiarkan beberapa tantangan
+    // hidup bersamaan akan mengalikan jumlah percobaan tebakan yang tersedia.
+    this.db
+      .prepare('UPDATE mfa_challenges SET consumed_at = ? WHERE user_id = ? AND consumed_at IS NULL')
+      .run(at, user.id);
+
+    const challengeToken = generateToken();
+    const expiresAt = new Date(Date.now() + MFA_CHALLENGE_TTL_MS).toISOString();
+
+    this.db
+      .prepare(
+        `INSERT INTO mfa_challenges
+           (id, tenant_id, user_id, token_hash, device_id, fingerprint_hash, ip, geo_json,
+            attempts, issued_at, expires_at, consumed_at)
+         VALUES (?,?,?,?,?,?,?,?,0,?,?,NULL)`,
+      )
+      .run(
+        newId('mfc'),
+        user.tenant_id,
+        user.id,
+        hashToken(challengeToken),
+        deviceId,
+        fingerprintHash(input.fingerprint),
+        input.ip ?? null,
+        input.geo ? JSON.stringify(input.geo) : null,
+        at,
+        expiresAt,
+      );
+
+    this.audit.record({
+      tenantId: user.tenant_id,
+      actorUserId: user.id,
+      actorLabel: email,
+      actorIp: input.ip ?? null,
+      action: 'auth.mfa_challenge_issued',
+      module: 'Otorisasi User',
+      objectType: 'user',
+      objectId: user.id,
+      detail: { deviceId },
+    });
+
+    return { kind: 'mfa_required', challengeToken, expiresAt, recoveryAccepted: true };
+  }
+
+  /**
+   * Menyelesaikan langkah kedua.
+   *
+   * Menerima kode TOTP maupun kode pemulihan di kolom yang sama: pengguna yang panik
+   * karena ponselnya hilang tidak perlu menemukan menu berbeda, dan servernya toh
+   * dapat membedakan keduanya dari bentuknya.
+   */
+  verifyMfaChallenge(input: {
+    challengeToken: string;
+    code: string;
+    fingerprint: FingerprintComponents;
+    ip?: string | null;
+  }): LoginResult {
+    const at = nowIso();
+    const challenge = this.db
+      .prepare('SELECT * FROM mfa_challenges WHERE token_hash = ?')
+      .get(hashToken(input.challengeToken)) as
+      | {
+          id: string;
+          tenant_id: string;
+          user_id: string;
+          device_id: string | null;
+          fingerprint_hash: string | null;
+          ip: string | null;
+          geo_json: string | null;
+          attempts: number;
+          expires_at: string;
+          consumed_at: string | null;
+        }
+      | undefined;
+
+    // Tantangan tidak dikenal / sudah dipakai / kedaluwarsa → semuanya dibalas sama,
+    // supaya tidak ada cara membedakan "token salah" dari "token kedaluwarsa".
+    if (!challenge || challenge.consumed_at || Date.parse(challenge.expires_at) <= Date.now()) {
+      return { kind: 'rejected', reasonKey: 'error.mfa_challenge_invalid', recoveryKey: 'recovery.login_again' };
+    }
+
+    // Tantangan terikat pada perangkat yang memulainya. Tanpa ini, token tantangan yang
+    // tercuri dapat diselesaikan dari perangkat lain — melemahkan device binding
+    // justru di langkah yang seharusnya memperkuatnya.
+    if (challenge.fingerprint_hash && challenge.fingerprint_hash !== fingerprintHash(input.fingerprint)) {
+      this.consumeChallenge(challenge.id, at);
+      this.audit.recordDenial({
+        tenantId: challenge.tenant_id,
+        actorUserId: challenge.user_id,
+        actorLabel: challenge.user_id,
+        actorIp: input.ip ?? null,
+        action: 'auth.mfa_challenge_device_mismatch',
+        module: 'Otorisasi User',
+        // `recordDenial` menetapkan severity sendiri — seluruh penolakan diperlakukan
+        // sebagai potensi insiden keamanan (SECURITY.md Bagian 9).
+        detail: { challengeId: challenge.id },
+      });
+      return { kind: 'rejected', reasonKey: 'error.mfa_challenge_invalid', recoveryKey: 'recovery.login_again' };
+    }
+
+    if (challenge.attempts >= MFA_MAX_CHALLENGE_ATTEMPTS) {
+      this.consumeChallenge(challenge.id, at);
+      return {
+        kind: 'rejected',
+        reasonKey: 'error.mfa_too_many_attempts',
+        recoveryKey: 'recovery.login_again',
+      };
+    }
+
+    const user = this.db.prepare('SELECT * FROM system_user WHERE id = ?').get(challenge.user_id) as
+      | UserRow
+      | undefined;
+    if (!user || user.status !== 'active' || !user.mfa_secret) {
+      this.consumeChallenge(challenge.id, at);
+      return { kind: 'rejected', reasonKey: 'error.mfa_challenge_invalid', recoveryKey: 'recovery.login_again' };
+    }
+
+    const outcome = this.checkSecondFactor(user, input.code, input.ip ?? null);
+    if (!outcome.ok) {
+      this.db
+        .prepare('UPDATE mfa_challenges SET attempts = attempts + 1 WHERE id = ?')
+        .run(challenge.id);
+      this.registerMfaFailure(user, input.ip ?? null);
+      const remaining = MFA_MAX_CHALLENGE_ATTEMPTS - (challenge.attempts + 1);
+      if (remaining <= 0) this.consumeChallenge(challenge.id, at);
+      return {
+        kind: 'rejected',
+        reasonKey: 'error.mfa_code_invalid',
+        recoveryKey: remaining > 0 ? 'recovery.try_code_again' : 'recovery.login_again',
+      };
+    }
+
+    this.consumeChallenge(challenge.id, at);
+
+    const geo = challenge.geo_json
+      ? (JSON.parse(challenge.geo_json) as { lat: number; lon: number; label?: string })
+      : null;
+
+    return this.issueSession(
+      user,
+      user.email,
+      { deviceId: challenge.device_id ?? '', registered: false },
+      input.ip ?? null,
+      geo,
+      at,
+      { mfaUsed: outcome.method },
+    );
+  }
+
+  private consumeChallenge(id: string, at: string): void {
+    this.db.prepare('UPDATE mfa_challenges SET consumed_at = ? WHERE id = ?').run(at, id);
+  }
+
+  /**
+   * Memeriksa kode TOTP, lalu kode pemulihan bila TOTP gagal.
+   *
+   * Anti-replay TOTP ditegakkan lewat `mfa_last_counter`: langkah waktu yang sudah
+   * pernah dipakai ditolak walau kodenya secara matematis masih sah dalam jendelanya.
+   */
+  private checkSecondFactor(
+    user: UserRow,
+    code: string,
+    ip: string | null,
+  ): { ok: true; method: 'totp' | 'recovery_code' } | { ok: false } {
+    const totp = verifyTotp(user.mfa_secret!, code, { minCounter: user.mfa_last_counter ?? undefined });
+    if (totp.valid && totp.counter !== null) {
+      this.db
+        .prepare('UPDATE system_user SET mfa_last_counter = ?, mfa_failed_attempts = 0, updated_at = ? WHERE id = ?')
+        .run(totp.counter, nowIso(), user.id);
+      return { ok: true, method: 'totp' };
+    }
+
+    const candidate = sha256(normaliseRecoveryCode(code));
+    const recovery = this.db
+      .prepare('SELECT id FROM mfa_recovery_codes WHERE user_id = ? AND code_hash = ? AND used_at IS NULL')
+      .get(user.id, candidate) as { id: string } | undefined;
+
+    if (recovery) {
+      const at = nowIso();
+      // Sekali pakai: ditandai terpakai SEBELUM sesi diterbitkan, sehingga dua
+      // permintaan bersamaan dengan kode yang sama tidak keduanya berhasil.
+      this.db.prepare('UPDATE mfa_recovery_codes SET used_at = ?, used_ip = ? WHERE id = ?').run(at, ip, recovery.id);
+      const remaining = this.countUnusedRecoveryCodes(user.id);
+      this.audit.record({
+        tenantId: user.tenant_id,
+        actorUserId: user.id,
+        actorLabel: user.email,
+        actorIp: ip,
+        action: 'auth.mfa_recovery_code_used',
+        module: 'Otorisasi User',
+        objectType: 'user',
+        objectId: user.id,
+        // Pemakaian kode pemulihan layak ditinjau: bisa jadi ponsel hilang, bisa juga
+        // penyalahgunaan. Sisa kode disertakan agar habisnya tidak mengejutkan.
+        severity: 'warning',
+        detail: { remainingRecoveryCodes: remaining },
+      });
+      return { ok: true, method: 'recovery_code' };
+    }
+
+    return { ok: false };
+  }
+
+  private countUnusedRecoveryCodes(userId: string): number {
+    return (
+      this.db
+        .prepare('SELECT COUNT(*) AS n FROM mfa_recovery_codes WHERE user_id = ? AND used_at IS NULL')
+        .get(userId) as { n: number }
+    ).n;
+  }
+
+  /** Kegagalan MFA berulang mengunci akun, sama seperti kegagalan kata sandi. */
+  private registerMfaFailure(user: UserRow, ip: string | null): void {
+    const attempts = (user.mfa_failed_attempts ?? 0) + 1;
+    const at = nowIso();
+    const lock = attempts >= MFA_LOCKOUT_THRESHOLD;
+
+    this.db
+      .prepare('UPDATE system_user SET mfa_failed_attempts = ?, locked_until = ?, updated_at = ? WHERE id = ?')
+      .run(attempts, lock ? new Date(Date.now() + LOCKOUT_MS).toISOString() : user.locked_until, at, user.id);
+
+    this.audit.recordDenial({
+      tenantId: user.tenant_id,
+      actorUserId: user.id,
+      actorLabel: user.email,
+      actorIp: ip,
+      action: 'auth.mfa_failed',
+      module: 'Otorisasi User',
+      detail: { attempts, locked: lock },
+    });
+  }
+
+  /* ---------------- Pendaftaran & pengelolaan MFA ---------------- */
+
+  /**
+   * Langkah 1 pendaftaran: membuat rahasia TETAPI belum mengaktifkan.
+   *
+   * Rahasia yang dibuat lalu ditinggalkan tidak boleh membuat akun tiba-tiba menuntut
+   * kode — itu akan mengunci pengguna yang sekadar membuka halaman pengaturan lalu
+   * menutupnya. Karena itu `mfa_enrolled` baru berubah pada `activateMfa()`.
+   */
+  beginMfaEnrolment(input: {
+    tenantId: string;
+    userId: string;
+    issuer?: string;
+  }): { secret: string; otpauthUri: string; alreadyActive: boolean } {
+    const user = this.requireUser(input.tenantId, input.userId);
+    if (user.mfa_enrolled === 1) {
+      // Rahasia yang aktif TIDAK pernah dikembalikan lagi. Mengembalikannya berarti
+      // sesi yang dibajak dapat menyalin faktor kedua korban.
+      return { secret: '', otpauthUri: '', alreadyActive: true };
+    }
+
+    const secret = generateMfaSecret();
+    this.db
+      .prepare('UPDATE system_user SET mfa_secret = ?, mfa_last_counter = NULL, updated_at = ? WHERE id = ?')
+      .run(secret, nowIso(), user.id);
+
+    return {
+      secret,
+      otpauthUri: otpauthUri({
+        secret,
+        accountLabel: user.email,
+        issuer: input.issuer && input.issuer.trim() !== '' ? input.issuer : 'Vantik Analytics',
+      }),
+      alreadyActive: false,
+    };
+  }
+
+  /** Langkah 2: kode yang benar membuktikan autentikator tersimpan, baru MFA diaktifkan. */
+  activateMfa(input: {
+    tenantId: string;
+    userId: string;
+    code: string;
+    ip?: string | null;
+  }): { activated: boolean; recoveryCodes: string[]; reasonKey?: string } {
+    const user = this.requireUser(input.tenantId, input.userId);
+    if (user.mfa_enrolled === 1) return { activated: false, recoveryCodes: [], reasonKey: 'error.mfa_already_active' };
+    if (!user.mfa_secret) return { activated: false, recoveryCodes: [], reasonKey: 'error.mfa_not_started' };
+
+    const verification = verifyTotp(user.mfa_secret, input.code);
+    if (!verification.valid) {
+      this.registerMfaFailure(user, input.ip ?? null);
+      return { activated: false, recoveryCodes: [], reasonKey: 'error.mfa_code_invalid' };
+    }
+
+    const at = nowIso();
+    const codes = generateRecoveryCodes();
+
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE system_user
+              SET mfa_enrolled = 1, mfa_activated_at = ?, mfa_last_counter = ?,
+                  mfa_failed_attempts = 0, updated_at = ?
+            WHERE id = ?`,
+        )
+        .run(at, verification.counter, at, user.id);
+      this.replaceRecoveryCodes(user, codes, at);
+    })();
+
+    this.audit.record({
+      tenantId: user.tenant_id,
+      actorUserId: user.id,
+      actorLabel: user.email,
+      actorIp: input.ip ?? null,
+      action: 'auth.mfa_activated',
+      module: 'Otorisasi User',
+      objectType: 'user',
+      objectId: user.id,
+      severity: 'notice',
+      detail: { recoveryCodesIssued: codes.length },
+    });
+
+    // Kode dikembalikan SEKALI ini saja; setelahnya hanya hash-nya yang tersimpan.
+    return { activated: true, recoveryCodes: codes };
+  }
+
+  /**
+   * Mematikan MFA.
+   *
+   * Menuntut kode yang sah, bukan hanya sesi yang aktif: sesi yang dibajak tidak boleh
+   * dapat melepas faktor kedua korban. Peran yang mewajibkan MFA ditolak sepenuhnya —
+   * pemeriksaan `mfaRequired` ada di pemanggil karena di situlah peran diketahui.
+   */
+  disableMfa(input: {
+    tenantId: string;
+    userId: string;
+    code: string;
+    ip?: string | null;
+  }): { disabled: boolean; reasonKey?: string } {
+    const user = this.requireUser(input.tenantId, input.userId);
+    if (user.mfa_enrolled !== 1 || !user.mfa_secret) {
+      return { disabled: false, reasonKey: 'error.mfa_not_active' };
+    }
+
+    const outcome = this.checkSecondFactor(user, input.code, input.ip ?? null);
+    if (!outcome.ok) {
+      this.registerMfaFailure(user, input.ip ?? null);
+      return { disabled: false, reasonKey: 'error.mfa_code_invalid' };
+    }
+
+    const at = nowIso();
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE system_user
+              SET mfa_enrolled = 0, mfa_secret = NULL, mfa_activated_at = NULL,
+                  mfa_last_counter = NULL, updated_at = ?
+            WHERE id = ?`,
+        )
+        .run(at, user.id);
+      this.db.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(user.id);
+    })();
+
+    this.audit.record({
+      tenantId: user.tenant_id,
+      actorUserId: user.id,
+      actorLabel: user.email,
+      actorIp: input.ip ?? null,
+      action: 'auth.mfa_disabled',
+      module: 'Otorisasi User',
+      objectType: 'user',
+      objectId: user.id,
+      // Melepas faktor kedua adalah penurunan postur keamanan akun — selalu critical.
+      severity: 'critical',
+      detail: { method: outcome.method },
+    });
+
+    return { disabled: true };
+  }
+
+  /** Menerbitkan ulang kode pemulihan; yang lama langsung tidak berlaku. */
+  regenerateRecoveryCodes(input: {
+    tenantId: string;
+    userId: string;
+    code: string;
+    ip?: string | null;
+  }): { codes: string[]; reasonKey?: string } {
+    const user = this.requireUser(input.tenantId, input.userId);
+    if (user.mfa_enrolled !== 1 || !user.mfa_secret) return { codes: [], reasonKey: 'error.mfa_not_active' };
+
+    // Kode pemulihan tidak diterima untuk aksi ini — hanya TOTP. Kalau tidak, satu kode
+    // pemulihan yang bocor dapat dipakai untuk mencetak sepuluh yang baru dan
+    // mempertahankan akses selamanya.
+    const verification = verifyTotp(user.mfa_secret, input.code, { minCounter: user.mfa_last_counter ?? undefined });
+    if (!verification.valid) {
+      this.registerMfaFailure(user, input.ip ?? null);
+      return { codes: [], reasonKey: 'error.mfa_code_invalid' };
+    }
+
+    const at = nowIso();
+    const codes = generateRecoveryCodes();
+    this.db.transaction(() => {
+      this.db
+        .prepare('UPDATE system_user SET mfa_last_counter = ?, updated_at = ? WHERE id = ?')
+        .run(verification.counter, at, user.id);
+      this.replaceRecoveryCodes(user, codes, at);
+    })();
+
+    this.audit.record({
+      tenantId: user.tenant_id,
+      actorUserId: user.id,
+      actorLabel: user.email,
+      actorIp: input.ip ?? null,
+      action: 'auth.mfa_recovery_codes_regenerated',
+      module: 'Otorisasi User',
+      objectType: 'user',
+      objectId: user.id,
+      severity: 'notice',
+      detail: { issued: codes.length },
+    });
+
+    return { codes };
+  }
+
+  /** Status MFA untuk ditampilkan di profil. Tidak pernah memuat rahasianya. */
+  mfaStatus(tenantId: string, userId: string): {
+    enrolled: boolean;
+    activatedAt: string | null;
+    secretPending: boolean;
+    remainingRecoveryCodes: number;
+  } {
+    const user = this.requireUser(tenantId, userId);
+    return {
+      enrolled: user.mfa_enrolled === 1,
+      activatedAt: (user as UserRow & { mfa_activated_at: string | null }).mfa_activated_at ?? null,
+      secretPending: user.mfa_enrolled !== 1 && Boolean(user.mfa_secret),
+      remainingRecoveryCodes: this.countUnusedRecoveryCodes(userId),
+    };
+  }
+
+  private replaceRecoveryCodes(user: UserRow, codes: string[], at: string): void {
+    this.db.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(user.id);
+    const insert = this.db.prepare(
+      `INSERT INTO mfa_recovery_codes (id, tenant_id, user_id, code_hash, created_at, used_at, used_ip)
+       VALUES (?,?,?,?,?,NULL,NULL)`,
+    );
+    for (const code of codes) {
+      insert.run(newId('mrc'), user.tenant_id, user.id, sha256(normaliseRecoveryCode(code)), at);
+    }
+  }
+
+  /**
+   * Pengguna dalam tenant pemanggil.
+   *
+   * `tenant_id` selalu ikut dalam kondisi WHERE: `userId` datang dari sesi, tetapi
+   * memasangkannya dengan tenant membuat kekeliruan pemanggil tidak dapat menyeberang
+   * batas tenant (SECURITY.md 16.1).
+   */
+  private requireUser(tenantId: string, userId: string): UserRow {
+    const user = this.db
+      .prepare('SELECT * FROM system_user WHERE id = ? AND tenant_id = ?')
+      .get(userId, tenantId) as UserRow | undefined;
+    if (!user) throw new UnauthenticatedError();
+    return user;
   }
 
   private findUser(email: string, tenantSlug?: string): UserRow | undefined {
