@@ -20,6 +20,14 @@ export interface CockpitKpi {
   status: KpiStatus;
   ownerLabel: string | null;
   trend: Array<{ period: string; score: number }>;
+  /**
+   * Dimensi yang diwakili angka di atas: `null` berarti agregat seluruh organisasi.
+   *
+   * Wajib ada karena pengguna ber-RLS tidak boleh melihat agregat, sehingga angka yang
+   * ia terima berasal dari satu dimensi saja. Tanpa penanda ini angka wilayah tampak
+   * seperti angka korporat — perbedaan yang menentukan keputusan.
+   */
+  dimensionScope: string | null;
 }
 
 export interface ExecutiveCockpit {
@@ -170,7 +178,20 @@ export class CockpitService {
       return dimension ? this.ctx.rls.permits({ [dimension]: row.dimension_key }) : false;
     });
 
-    const current = permitted.find((s) => s.period === period);
+    // Baris mana yang mewakili periode ini?
+    //
+    // Setiap periode menyimpan satu baris per dimensi DITAMBAH satu agregat lintas
+    // dimensi (`dimension_key IS NULL`). Sebelumnya diambil baris pertama yang periodenya
+    // cocok, sementara urutan antar-baris seperiode tidak ditentukan — akibatnya
+    // Executive Cockpit melaporkan angka SATU wilayah sebagai angka korporat, bergantung
+    // wilayah mana yang lebih dulu ditangkap. Menukar urutan data mengubah skor direksi.
+    const sePeriode = permitted.filter((s) => s.period === period);
+    const current =
+      sePeriode.find((s) => s.dimension_key === null) ??
+      // Pengguna ber-RLS tidak pernah melihat agregat, jadi angkanya berasal dari dimensi
+      // yang boleh ia lihat. Dipilih berdasarkan urutan nama agar hasilnya tidak berubah
+      // karena urutan penyimpanan.
+      [...sePeriode].sort((a, b) => (a.dimension_key ?? '').localeCompare(b.dimension_key ?? ''))[0];
     if (!current) return null;
 
     const owner = kpi.owner_employee_id
@@ -186,7 +207,12 @@ export class CockpitService {
       target: kpi.target,
       status: current.status,
       ownerLabel: owner ? `${owner.full_name} · ${owner.position}` : null,
+      dimensionScope: current.dimension_key,
+      // Tren harus berasal dari dimensi yang SAMA dengan angka sekarang. Mencampur
+      // dimensi menghasilkan deret berisi beberapa titik per periode, dan sparkline
+      // di Executive Cockpit menggambarnya seolah itu perjalanan waktu.
       trend: permitted
+        .filter((s) => s.dimension_key === current.dimension_key)
         .slice(0, 24)
         .reverse()
         .map((s) => ({ period: s.period, score: s.score })),

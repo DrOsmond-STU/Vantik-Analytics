@@ -722,6 +722,7 @@ export const dictionary = {
     'Tampilan dibatasi Row-Level Security peran Anda: {dimensions}.',
     'View restricted by your role Row-Level Security: {dimensions}.',
   ],
+  'ui.scope_dimension': ['Cakupan: {scope}', 'Scope: {scope}'],
   'ui.read_only_banner': [
     'Ruang kerja dalam mode baca-saja — perubahan dinonaktifkan sementara.',
     'Workspace is read-only — changes are temporarily disabled.',

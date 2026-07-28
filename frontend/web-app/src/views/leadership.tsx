@@ -20,6 +20,8 @@ interface CockpitKpi {
   status: string;
   ownerLabel: string | null;
   trend: Array<{ period: string; score: number }>;
+  /** `null` = agregat seluruh organisasi; berisi nama dimensi bila angkanya sebagian. */
+  dimensionScope: string | null;
 }
 
 export function ExecutiveCockpitView(): JSX.Element {
@@ -93,6 +95,9 @@ export function ExecutiveCockpitView(): JSX.Element {
                       <StatusTag status={kpi.status} />
                     </div>
                     {kpi.ownerLabel && <div className="row">{kpi.ownerLabel}</div>}
+                    {kpi.dimensionScope !== null && (
+                      <div className="row">{t('ui.scope_dimension', { scope: kpi.dimensionScope })}</div>
+                    )}
                   </div>
                 </Card>
               ))
@@ -222,6 +227,11 @@ export function OperationalCockpitView(): JSX.Element {
                       {formatDecimal(kpi.value, locale, 2)} {kpi.unit ?? ''}
                       <StatusTag status={kpi.status} />
                     </div>
+                    {/* Pengguna ber-RLS menerima angka SATU dimensi, bukan agregat
+                        organisasi. Tanpa penanda ini keduanya tampak sama persis. */}
+                    {kpi.dimensionScope !== null && (
+                      <div className="row">{t('ui.scope_dimension', { scope: kpi.dimensionScope })}</div>
+                    )}
                   </div>
                 </Card>
               ))

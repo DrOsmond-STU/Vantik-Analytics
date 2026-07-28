@@ -1047,6 +1047,23 @@ const REMAINING_MAIN_MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+
+  {
+    id: '0011_stat_cache_rls_scope',
+    sql: `
+      -- Cakupan RLS yang berlaku saat hasil dihitung.
+      --
+      -- Cache hasil analisis dikunci pada hash spesifikasi. Spesifikasi TIDAK memuat
+      -- himpunan baris yang boleh dilihat pemanggil, sehingga hasil yang dihitung untuk
+      -- pengguna tanpa batas sempat disajikan apa adanya kepada pengguna ber-RLS —
+      -- statistik agregat atas baris yang tidak boleh ia lihat.
+      --
+      -- Kolom ini membuat barisnya dapat dibaca kembali: dua baris dengan spec_json
+      -- identik dan result_json berbeda kini punya penjelasan yang tersimpan, bukan
+      -- selisih yang harus ditebak auditor.
+      ALTER TABLE stat_analyses ADD COLUMN rls_scope_json TEXT;
+    `,
+  },
 ];
 
 /**

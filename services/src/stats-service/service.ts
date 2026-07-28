@@ -116,8 +116,46 @@ export class StatsService {
     return numbers;
   }
 
+  /**
+   * Bentuk kanonik cakupan RLS pemanggil, untuk dijadikan bagian kunci cache.
+   *
+   * Dinormalisasi (huruf kecil, nilai terurut, aturan terurut) supaya dua pengguna
+   * dengan cakupan efektif SAMA tetap berbagi cache — tanpa itu cache akan terpecah
+   * per pengguna dan kehilangan gunanya. Huruf kecil sejalan dengan `RlsScope.permits()`
+   * yang juga membandingkan tanpa memedulikan besar-kecil huruf.
+   */
+  private rlsCacheKey(): string {
+    const rules = this.ctx.rls.toJSON();
+    if (rules.length === 0) return '*';
+    return rules
+      .map((rule) =>
+        JSON.stringify({
+          d: rule.dimension.toLowerCase(),
+          o: rule.operator,
+          v: [...rule.values].map((v) => v.toLowerCase()).sort(),
+        }),
+      )
+      .sort()
+      .join('|');
+  }
+
+  /**
+   * Cache hasil analisis.
+   *
+   * Aman karena hasilnya deterministik — TETAPI kuncinya wajib memuat cakupan RLS
+   * pemanggil, bukan hanya spesifikasi analisis. Dua pengguna dapat mengirim
+   * spesifikasi yang identik dan tetap berhak atas HIMPUNAN BARIS yang berbeda.
+   *
+   * Tanpa cakupan di dalam kunci, hasil pertama yang tersimpan akan disajikan kepada
+   * siapa pun yang mengirim spesifikasi sama: administrator tanpa batas menghitung
+   * rata-rata seluruh wilayah, lalu analis yang hanya berhak atas satu wilayah
+   * menerimanya utuh. Tidak satu baris pun dikembalikan, namun agregatnya tetap
+   * membocorkan wilayah yang tidak boleh ia lihat — dan `loadRows()` yang menerapkan
+   * RLS tidak pernah dijalankan pada cache hit (SECURITY.md Bagian 5, TESTING.md Bagian 4).
+   */
   private cached<T>(kind: string, spec: object, compute: () => T): T {
-    const specHash = sha256(`${kind}:${JSON.stringify(spec)}`);
+    const rlsScope = this.rlsCacheKey();
+    const specHash = sha256(`${kind}:${JSON.stringify(spec)}:rls=${rlsScope}`);
     const hit = this.ctx.db.get<{ result_json: string }>('stat_analyses', { spec_hash: specHash });
     if (hit) return JSON.parse(hit.result_json) as T;
 
@@ -128,6 +166,9 @@ export class StatsService {
       kind,
       spec_json: JSON.stringify(spec),
       spec_hash: specHash,
+      // Disimpan agar barisnya dapat dijelaskan sendiri: spec_json yang sama dengan
+      // hasil berbeda bukan tanda kerusakan, melainkan cakupan yang berbeda.
+      rls_scope_json: JSON.stringify(this.ctx.rls.toJSON()),
       result_json: JSON.stringify(result),
       created_at: nowIso(),
       created_by: this.ctx.actor.userId,
