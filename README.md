@@ -41,8 +41,9 @@ AI Analyst mencakup hampir seluruh modul analitik.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 310 test
-npm run test:coverage # dengan ambang cakupan
+npm test              # 381 test (357 backend + 24 komponen web)
+npm run test:coverage # backend dengan ambang cakupan
+npm run test:web      # hanya uji komponen/DOM web app
 ```
 
 ---
@@ -201,7 +202,7 @@ pelanggaran baru di masa depan.
 
 ## Pengujian
 
-310 test, mengikuti TESTING.md. Penamaan `TC-XX-NN` mengikuti pola Bagian 3.
+381 test, mengikuti TESTING.md. Penamaan `TC-XX-NN` mengikuti pola Bagian 3.
 
 | Berkas | Cakupan |
 |---|---|
@@ -215,9 +216,20 @@ pelanggaran baru di masa depan.
 | `tests/mfa.test.ts` | Vektor uji **resmi RFC 6238**, anti-replay, kode pemulihan sekali pakai, tantangan terikat perangkat, dan penegakan `mfaRequired` per peran |
 | `tests/device-transfer.test.ts` | Perjalanan lengkap terkunci → pulih → masuk kembali, dan bahwa jalur pemulihan bukan jalan pintas melewati device binding |
 | `tests/scheduler.test.ts` | Klaim pekerjaan (tidak berjalan dua kali), ketahanan saat satu tenant gagal, dan kewenangan sempit aktor sistem |
+| `tests/stats-service.test.ts` | Cache hasil analisis **tidak menyeberangi cakupan RLS**, penolakan spesifikasi salah bentuk sebagai 400, dan transparansi metode (n setelah listwise deletion) |
+| `tests/presentation.test.ts` | Angka korporat memakai agregat lintas dimensi, tren tidak mencampur dimensi, cakupan per divisi, dan penegakan baca-saja pada Balanced Scorecard |
 
-Cakupan saat ini: **84,1% baris / 84% fungsi**. Ambang ditegakkan di `vitest.config.ts` dan
-memblokir merge bila turun.
+Uji komponen/DOM web app berada di `frontend/web-app/tests/` (proyek vitest tersendiri,
+karena butuh jsdom sedangkan tsconfig `services/` sengaja tanpa `lib: DOM`):
+
+| Berkas | Cakupan |
+|---|---|
+| `tests/login.test.tsx` | Alur masuk dua langkah: formulir berganti saat faktor kedua diminta, tantangan mati mengembalikan pengguna ke langkah kata sandi, alasan **dan** langkah pemulihan keduanya tampil, kirim ganda dicegah |
+| `tests/mfa-panel.test.tsx` | Kode pemulihan tampil sekali disertai peringatannya, rahasia tidak hilang setelah satu kode salah, tombol matikan disembunyikan untuk peran yang mewajibkan MFA |
+| `tests/fingerprint.test.tsx` | Peramban yang memblokir kanvas demi privasi tidak menggagalkan login |
+
+Cakupan backend saat ini: **85,8% baris / 85,7% fungsi / 68,1% branch**. Ambang ditegakkan
+di `vitest.config.ts` dan memblokir merge bila turun.
 
 ---
 

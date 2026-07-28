@@ -13,11 +13,12 @@
     "dev": "concurrently -n api,web -c cyan,magenta \"npm run dev --workspace @vantik/api\" \"npm run dev --workspace @vantik/web-app\"",
     "start": "npm run start --workspace @vantik/api",
     "seed": "npm run seed --workspace @vantik/api",
-    "test": "npm run test --workspace @vantik/api",
+    "test": "npm run test --workspace @vantik/api && npm run test --workspace @vantik/web-app",
     "test:coverage": "npm run test:coverage --workspace @vantik/api",
     "typecheck": "npm run typecheck --workspace @vantik/api && npm run typecheck --workspace @vantik/web-app",
     "package": "node scripts/package-deploy.mjs",
-    "start:deploy": "node deploy/app.js"
+    "start:deploy": "node deploy/app.js",
+    "test:web": "npm run test --workspace @vantik/web-app"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

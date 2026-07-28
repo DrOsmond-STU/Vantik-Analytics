@@ -1010,7 +1010,14 @@ export function AuditLogView(): JSX.Element {
  * memblokir segalanya karena MFA belum aktif — karena itu ia tidak bergantung pada izin
  * apa pun, dan `PageHead` di sekelilingnya tetap tampil meski panel lain gagal memuat.
  */
-function MfaPanel(): JSX.Element {
+/**
+ * Diekspor agar dapat diuji sendiri.
+ *
+ * `DeviceView` yang memuatnya memanggil tiga endpoint lain saat dipasang, sehingga
+ * menguji pendaftaran MFA lewat induknya berarti menyiapkan tiruan untuk hal yang tidak
+ * sedang diuji — dan kegagalan salah satunya akan tampak seperti kegagalan MFA.
+ */
+export function MfaPanel(): JSX.Element {
   const { t, locale, refreshSession } = useApp();
   const status = useAsync(() => api.get<MfaStatus>('/mfa/status'), []);
   const [setup, setSetup] = useState<{ secret: string; otpauthUri: string } | null>(null);

@@ -4,7 +4,7 @@
  * Semua status disertai ANGKA atau LABEL TEKS, tidak pernah warna saja
  * (DESIGN.md Bagian 9 — aksesibilitas untuk pengguna buta warna).
  */
-import type { ReactNode } from 'react';
+import { cloneElement, isValidElement, useId, type ReactElement, type ReactNode } from 'react';
 import { useApp } from '../app/AppContext.tsx';
 
 export type StatusLevel = 'good' | 'warn' | 'bad' | 'info' | 'muted';
@@ -183,6 +183,17 @@ export function EmptyState({
   );
 }
 
+/**
+ * Medan formulir berlabel.
+ *
+ * Label DITAUTKAN ke kontrolnya lewat `htmlFor`/`id`, dan petunjuknya lewat
+ * `aria-describedby`. Sebelumnya `<label>` berdiri sendiri tanpa tautan: terlihat benar
+ * di layar, tetapi pembaca layar tidak dapat menyebutkan medan mana yang sedang diisi —
+ * pada formulir masuk artinya pengguna tidak tahu kotak mana kata sandinya.
+ *
+ * `id` dibuat `useId()` supaya satu label tidak pernah menaut ke medan milik instans
+ * lain ketika komponen yang sama dipakai beberapa kali dalam satu halaman.
+ */
 export function Field({
   label,
   hint,
@@ -192,12 +203,27 @@ export function Field({
   hint?: string;
   children: ReactNode;
 }): JSX.Element {
+  const id = useId();
+  const hintId = `${id}-hint`;
+  // Anak tunggal berupa elemen menerima id & keterkaitan petunjuk; bentuk lain
+  // (mis. beberapa kontrol sekaligus) dibiarkan apa adanya agar tidak ada id ganda.
+  const control = isValidElement(children)
+    ? cloneElement(children as ReactElement<{ id?: string; 'aria-describedby'?: string }>, {
+        id,
+        ...(hint ? { 'aria-describedby': hintId } : {}),
+      })
+    : children;
+
   return (
     <div className="field">
       {/* Label terpisah di atas input — tetap terlihat saat pengguna mengetik. */}
-      <label>{label}</label>
-      {children}
-      {hint && <div className="hint">{hint}</div>}
+      <label htmlFor={id}>{label}</label>
+      {control}
+      {hint && (
+        <div className="hint" id={hintId}>
+          {hint}
+        </div>
+      )}
     </div>
   );
 }
