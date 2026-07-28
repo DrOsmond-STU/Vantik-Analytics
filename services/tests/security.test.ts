@@ -26,6 +26,8 @@ import { newId } from '../src/platform/db.ts';
 import { ForbiddenError, NotFoundError } from '../src/platform/errors.ts';
 import { TenantScopedDb } from '../src/platform/tenancy.ts';
 import { can, resolvePermissions, STANDARD_ROLES } from '../src/platform/rbac.ts';
+import { IdempotencyStore, RateLimiter } from '../src/platform/http.ts';
+import { RateLimitedError } from '../src/platform/errors.ts';
 
 let harness: Harness;
 
@@ -411,5 +413,95 @@ describe('Masukan tidak tepercaya dibatasi sebelum diproses', () => {
     expect(() => tokenizeFormula('1+'.repeat(MAX_FORMULA_LENGTH))).toThrow(/formula_too_long|too_long/i);
     // Formula wajar tetap diterima.
     expect(tokenizeFormula('SUM(jumlah_tiket) / 2').length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Keadaan runtime yang harus DIBAGI antar-proses (DEPLOY-SHARED-HOSTING.md).
+ *
+ * Passenger di shared hosting menjalankan beberapa proses dan me-recycle saat idle.
+ * Batas laju yang disimpan di memori berarti batas "10 per menit" sesungguhnya
+ * 10 × jumlah proses, dan hilang setiap recycle — kontrol keamanan yang meluruh tanpa
+ * ada yang melihat, justru di platform yang menjadi target pemasangan.
+ */
+describe('Batas laju & idempotensi dibagi antar-proses', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    harness = createHarness();
+  });
+
+  afterEach(() => {
+    harness.cleanup();
+  });
+
+  it('TC-RL-01 — dua instance berbeda berbagi satu penghitung', () => {
+    // Dua instance mewakili dua proses Passenger yang melayani domain yang sama.
+    const prosesA = new RateLimiter(3, 60_000, harness.db);
+    const prosesB = new RateLimiter(3, 60_000, harness.db);
+
+    prosesA.check('login:203.0.113.9');
+    prosesB.check('login:203.0.113.9');
+    prosesA.check('login:203.0.113.9');
+
+    // Permintaan keempat ditolak SIAPA PUN yang menerimanya. Dengan penghitung di
+    // memori, prosesB baru akan menolak pada permintaan keempatnya sendiri — memberi
+    // penyerang 3 × jumlah proses percobaan.
+    expect(() => prosesB.check('login:203.0.113.9')).toThrow(RateLimitedError);
+    expect(() => prosesA.check('login:203.0.113.9')).toThrow(RateLimitedError);
+  });
+
+  it('TC-RL-02 — kunci berbeda tidak saling menghabiskan kuota', () => {
+    const limiter = new RateLimiter(2, 60_000, harness.db);
+    limiter.check('login:1.1.1.1');
+    limiter.check('login:1.1.1.1');
+    expect(() => limiter.check('login:1.1.1.1')).toThrow(RateLimitedError);
+    // IP lain harus tetap punya kuota penuh; kalau tidak, satu penyerang dapat
+    // memblokir seluruh pengguna lain.
+    expect(() => limiter.check('login:2.2.2.2')).not.toThrow();
+  });
+
+  it('TC-RL-03 — jendela geser: hit lama tidak lagi dihitung', () => {
+    const limiter = new RateLimiter(2, 60_000, harness.db);
+    limiter.check('login:3.3.3.3');
+    limiter.check('login:3.3.3.3');
+    expect(() => limiter.check('login:3.3.3.3')).toThrow(RateLimitedError);
+
+    // Menua-kan hit yang tercatat sama artinya dengan menunggu jendelanya lewat.
+    harness.db
+      .prepare('UPDATE rate_limit_hits SET hit_at_ms = hit_at_ms - ? WHERE bucket = ?')
+      .run(120_000, 'login:3.3.3.3');
+    expect(() => limiter.check('login:3.3.3.3')).not.toThrow();
+  });
+
+  it('TC-RL-04 — penghitung bertahan melewati recycle proses', () => {
+    const sebelumRecycle = new RateLimiter(2, 60_000, harness.db);
+    sebelumRecycle.check('login:4.4.4.4');
+    sebelumRecycle.check('login:4.4.4.4');
+
+    // Instance baru = proses baru setelah Passenger me-recycle yang idle. Batas yang
+    // hilang saat recycle akan membuat penguncian akun mudah diakali dengan menunggu.
+    const setelahRecycle = new RateLimiter(2, 60_000, harness.db);
+    expect(() => setelahRecycle.check('login:4.4.4.4')).toThrow(RateLimitedError);
+  });
+
+  it('TC-RL-05 — respons idempoten terlihat oleh proses lain', () => {
+    const prosesA = new IdempotencyStore(harness.db);
+    const prosesB = new IdempotencyStore(harness.db);
+
+    prosesA.set('t1:POST:/api/v1/alerts:key-9', 201, { id: 'alr_1' });
+
+    // Permintaan ulang yang mendarat di proses lain harus menerima respons yang SAMA,
+    // bukan menjalankan aksinya untuk kedua kali.
+    expect(prosesB.get('t1:POST:/api/v1/alerts:key-9')).toEqual({ status: 201, body: { id: 'alr_1' } });
+  });
+
+  it('TC-RL-06 — entri idempoten yang kedaluwarsa tidak dipakai lagi', () => {
+    const store = new IdempotencyStore(harness.db);
+    store.set('t1:POST:/x:key-old', 200, { ok: true });
+    harness.db
+      .prepare('UPDATE idempotency_entries SET created_at_ms = ? WHERE key = ?')
+      .run(Date.now() - 48 * 3600 * 1000, 't1:POST:/x:key-old');
+    expect(store.get('t1:POST:/x:key-old')).toBeUndefined();
   });
 });

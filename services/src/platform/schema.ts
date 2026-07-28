@@ -979,6 +979,74 @@ const REMAINING_MAIN_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_mfa_challenge_user ON mfa_challenges(tenant_id, user_id);
     `,
   },
+  {
+    // Outbox notifikasi serbaguna + keadaan runtime yang harus DIBAGI antar-proses.
+    id: '0010_outbox_and_shared_runtime_state',
+    sql: `
+      -- Outbox notifikasi.
+      --
+      -- Tabel alert_deliveries terikat pada alert_events, jadi tidak dapat menampung
+      -- pesan non-alert — mis. OTP pemindahan perangkat. Tabel ini menampung semuanya,
+      -- dengan status yang menyatakan kenyataan: pesan yang belum terkirim tetap
+      -- terlihat, bukan hilang atau dicatat sebagai berhasil.
+      CREATE TABLE notification_outbox (
+        id             TEXT PRIMARY KEY,
+        tenant_id      TEXT NOT NULL REFERENCES tenants(id),
+        purpose        TEXT NOT NULL,          -- device_transfer_otp | alert | report | …
+        channel        TEXT NOT NULL,
+        recipient      TEXT NOT NULL,
+        subject        TEXT NOT NULL,
+        body           TEXT NOT NULL,
+        -- queued: menunggu transport. sent: benar-benar terkirim. failed: transport
+        -- mencoba dan gagal. Ketiganya berbeda dan tidak boleh dicampur.
+        status         TEXT NOT NULL DEFAULT 'queued',
+        attempts       INTEGER NOT NULL DEFAULT 0,
+        failure_reason TEXT,
+        -- Rahasia (mis. OTP) TIDAK disimpan di sini dalam bentuk terbaca ulang oleh
+        -- pembaca outbox biasa; body-nya sudah memuat pesan jadi, dan izin membaca
+        -- outbox terpisah dari izin lain.
+        sensitive      INTEGER NOT NULL DEFAULT 0,
+        created_at     TEXT NOT NULL,
+        sent_at        TEXT
+      );
+      CREATE INDEX idx_outbox_tenant_status ON notification_outbox(tenant_id, status, created_at);
+
+      -- Penghitung batas laju, DIBAGI antar-proses.
+      --
+      -- Sebelumnya disimpan di Map dalam memori. Passenger menjalankan beberapa proses
+      -- dan me-recycle saat idle, jadi batas "10 per menit" sebenarnya 10 × jumlah
+      -- proses dan hilang setiap recycle — kontrol keamanan yang meluruh tanpa terlihat,
+      -- justru di platform yang menjadi target pemasangan.
+      --
+      -- TANPA tenant_id: batas laju melindungi lapisan HTTP sebelum tenant diketahui
+      -- (login belum punya sesi), jadi tabel ini memang global.
+      CREATE TABLE rate_limit_hits (
+        bucket     TEXT NOT NULL,
+        hit_at_ms  INTEGER NOT NULL
+      );
+      CREATE INDEX idx_rate_limit_bucket ON rate_limit_hits(bucket, hit_at_ms);
+
+      -- Respons idempoten, juga dibagi antar-proses: permintaan ulang yang mendarat di
+      -- proses berbeda harus menerima respons yang sama, bukan menjalankan aksinya lagi.
+      CREATE TABLE idempotency_entries (
+        key        TEXT PRIMARY KEY,
+        status     INTEGER NOT NULL,
+        body_json  TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL
+      );
+      CREATE INDEX idx_idempotency_created ON idempotency_entries(created_at_ms);
+
+      -- Jejak eksekusi penjadwal, supaya pekerjaan tidak dijalankan dua kali oleh dua
+      -- proses Passenger dan supaya operator dapat melihat kapan terakhir berjalan.
+      CREATE TABLE scheduler_runs (
+        job          TEXT PRIMARY KEY,
+        started_at   TEXT NOT NULL,
+        finished_at  TEXT,
+        outcome      TEXT,
+        detail_json  TEXT
+      );
+    `,
+  },
 ];
 
 /**

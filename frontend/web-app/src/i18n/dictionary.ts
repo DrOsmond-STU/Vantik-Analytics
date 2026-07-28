@@ -242,6 +242,19 @@ export const dictionary = {
     'Check the latest code in your authenticator app.',
   ],
   'recovery.login_again': ['Masuk kembali untuk memulai ulang.', 'Sign in again to start over.'],
+  'recovery.enter_transfer_otp': [
+    'Kode verifikasi dikirim ke email terdaftar Anda. Masukkan kode itu untuk melanjutkan.',
+    'A verification code was sent to your registered email. Enter it to continue.',
+  ],
+  'recovery.awaiting_admin_approval': [
+    'Kode terverifikasi. Permintaan Anda menunggu persetujuan Admin.',
+    'Code verified. Your request is awaiting Admin approval.',
+  ],
+  'error.transfer_otp_invalid': ['Kode verifikasi tidak cocok.', 'The verification code does not match.'],
+  'error.transfer_not_pending': [
+    'Permintaan pemindahan sudah tidak berlaku.',
+    'The transfer request is no longer valid.',
+  ],
   'error.device_not_bound': [
     'Akun ini sudah terikat perangkat lain.',
     'This account is already bound to another device.',

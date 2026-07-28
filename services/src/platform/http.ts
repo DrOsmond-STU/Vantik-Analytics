@@ -149,19 +149,59 @@ export function requireContext(req: Request): RequestContext {
  * Kuota UI dan kuota token integrasi dipisah (ARCHITECTURE.md Bagian 6).
  */
 export class RateLimiter {
+  /**
+   * Cadangan di memori, HANYA dipakai bila tidak ada basis data.
+   *
+   * Dipertahankan supaya `RateLimiter` tetap dapat dipakai di luar konteks HTTP (mis.
+   * pengujian unit yang tidak merangkai basis data), tetapi jalur produksi selalu
+   * memakai tabel.
+   */
   private readonly hits = new Map<string, number[]>();
+
+  /** Pembersihan baris kedaluwarsa tidak perlu tiap permintaan; ini penghitungnya. */
+  private sweepCounter = 0;
 
   constructor(
     private readonly limit: number,
     private readonly windowMs: number,
+    /**
+     * Penyimpanan penghitung yang DIBAGI antar-proses.
+     *
+     * Tanpa ini, penghitung ada di Map per-proses. Passenger di shared hosting
+     * menjalankan beberapa proses dan me-recycle saat idle, jadi batas "10 per menit"
+     * sebenarnya 10 × jumlah proses dan hilang setiap recycle — kontrol keamanan yang
+     * meluruh tanpa terlihat, justru di platform yang menjadi target pemasangan.
+     */
+    private readonly db?: Db,
   ) {}
 
   check(key: string): void {
     const now = Date.now();
-    const window = (this.hits.get(key) ?? []).filter((t) => now - t < this.windowMs);
-    if (window.length >= this.limit) throw new RateLimitedError();
-    window.push(now);
-    this.hits.set(key, window);
+    if (!this.db) {
+      const window = (this.hits.get(key) ?? []).filter((t) => now - t < this.windowMs);
+      if (window.length >= this.limit) throw new RateLimitedError();
+      window.push(now);
+      this.hits.set(key, window);
+      return;
+    }
+
+    const since = now - this.windowMs;
+    // Baris kedaluwarsa untuk kunci INI dibuang lebih dulu, supaya hitungannya benar
+    // tanpa bergantung pada pembersihan berkala.
+    this.db.prepare('DELETE FROM rate_limit_hits WHERE bucket = ? AND hit_at_ms < ?').run(key, since);
+
+    const used = (
+      this.db.prepare('SELECT COUNT(*) AS n FROM rate_limit_hits WHERE bucket = ?').get(key) as { n: number }
+    ).n;
+    if (used >= this.limit) throw new RateLimitedError();
+
+    this.db.prepare('INSERT INTO rate_limit_hits (bucket, hit_at_ms) VALUES (?, ?)').run(key, now);
+
+    // Kunci yang tidak pernah dipakai lagi (mis. IP yang hilang) tidak akan pernah
+    // membersihkan dirinya lewat jalur di atas, jadi sesekali seluruh tabel disapu.
+    if (++this.sweepCounter % 200 === 0) {
+      this.db.prepare('DELETE FROM rate_limit_hits WHERE hit_at_ms < ?').run(since);
+    }
   }
 
   middleware(keyFn: (req: Request) => string) {
@@ -184,18 +224,53 @@ export class IdempotencyStore {
   private readonly entries = new Map<string, { at: number; body: unknown; status: number }>();
   private readonly ttlMs = 24 * 3600 * 1000;
 
+  /**
+   * `db` membuat respons idempoten DIBAGI antar-proses.
+   *
+   * Tanpanya, permintaan ulang yang mendarat di proses Passenger berbeda tidak menemukan
+   * entri apa pun dan menjalankan aksinya untuk kedua kali — yang justru dicegah oleh
+   * idempotensi (mis. mengirim notifikasi dua kali, menyertifikasi dataset dua kali).
+   */
+  constructor(private readonly db?: Db) {}
+
   get(key: string): { body: unknown; status: number } | undefined {
-    const entry = this.entries.get(key);
-    if (!entry) return undefined;
-    if (Date.now() - entry.at > this.ttlMs) {
-      this.entries.delete(key);
+    if (!this.db) {
+      const entry = this.entries.get(key);
+      if (!entry) return undefined;
+      if (Date.now() - entry.at > this.ttlMs) {
+        this.entries.delete(key);
+        return undefined;
+      }
+      return { body: entry.body, status: entry.status };
+    }
+
+    const row = this.db
+      .prepare('SELECT status, body_json, created_at_ms FROM idempotency_entries WHERE key = ?')
+      .get(key) as { status: number; body_json: string; created_at_ms: number } | undefined;
+    if (!row) return undefined;
+    if (Date.now() - row.created_at_ms > this.ttlMs) {
+      this.db.prepare('DELETE FROM idempotency_entries WHERE key = ?').run(key);
       return undefined;
     }
-    return { body: entry.body, status: entry.status };
+    return { body: JSON.parse(row.body_json), status: row.status };
   }
 
   set(key: string, status: number, body: unknown): void {
-    this.entries.set(key, { at: Date.now(), status, body });
+    if (!this.db) {
+      this.entries.set(key, { at: Date.now(), status, body });
+      return;
+    }
+    // INSERT OR REPLACE: dua proses yang menyelesaikan permintaan yang sama nyaris
+    // bersamaan tidak boleh saling menggagalkan lewat pelanggaran kunci utama.
+    this.db
+      .prepare(
+        `INSERT INTO idempotency_entries (key, status, body_json, created_at_ms)
+         VALUES (?,?,?,?)
+         ON CONFLICT(key) DO UPDATE SET status = excluded.status,
+                                        body_json = excluded.body_json,
+                                        created_at_ms = excluded.created_at_ms`,
+      )
+      .run(key, status, JSON.stringify(body ?? null), Date.now());
   }
 
   middleware() {

@@ -91,7 +91,14 @@ export function mountWebApp(app: express.Express, webRoot: string): void {
 export function startServer(): ReturnType<express.Express['listen']> {
   // Passenger (cPanel) menetapkan PORT sendiri; jangan pernah dipatok di kode.
   const port = Number(process.env.PORT ?? 4000);
-  const { app, db } = createApp();
+  const { app, db, scheduler } = createApp();
+
+  // Penjadwal dimulai DI SINI, bukan di `createApp()`.
+  //
+  // `createApp()` dipakai ratusan kali oleh pengujian; memulai ticker di sana akan
+  // membuat setiap uji menjalankan pekerjaan latar dan saling mengganggu. Proses server
+  // sungguhan hanya satu, dan hanya di situ ticker punya arti.
+  scheduler.start();
 
   const webRoot = resolveWebRoot();
   if (webRoot) mountWebApp(app, webRoot);
@@ -99,6 +106,11 @@ export function startServer(): ReturnType<express.Express['listen']> {
 
   const server = app.listen(port, () => {
     console.log(`[vantik] siap · port ${port} · driver ${db.driver} · data ${resolveDataDir()}`);
+    if (!process.env.VANTIK_SCHEDULER_TOKEN) {
+      // Dinyatakan terbuka: tanpa cron eksternal, penjadwalan hanya berjalan selama
+      // proses hidup — dan Passenger mematikan proses yang idle.
+      console.log('[vantik] VANTIK_SCHEDULER_TOKEN belum diset — penjadwalan hanya lewat ticker dalam proses');
+    }
     if (!webRoot) {
       console.log('[vantik] build frontend tidak ditemukan — hanya API. Jalankan `npm run build`.');
     }
@@ -110,6 +122,7 @@ export function startServer(): ReturnType<express.Express['listen']> {
 
   const shutdown = (signal: string): void => {
     console.log(`[vantik] ${signal} diterima, menutup`);
+    scheduler.stop();
     server.close(() => {
       db.close();
       process.exit(0);

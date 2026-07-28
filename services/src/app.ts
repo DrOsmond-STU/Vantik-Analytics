@@ -6,11 +6,14 @@
  * SATU-SATUNYA tempat konteks-konteks itu dirangkai — tidak ada layanan yang
  * mengimpor internal layanan lain secara langsung.
  */
+import { timingSafeEqual } from 'node:crypto';
 import express, { type Express, type Request, type Response } from 'express';
 import cookieParser from 'cookie-parser';
 
 import { AuditService } from './audit-service/index.ts';
 import { openDatabase, type Db, type DbPaths } from './platform/db.ts';
+import { NotificationOutbox } from './platform/outbox.ts';
+import { Scheduler, SCHEDULER_INTERVAL_MS, type JobRunner } from './platform/scheduler.ts';
 import { KeyRing } from './platform/crypto.ts';
 import { ValidationError } from './platform/errors.ts';
 import {
@@ -65,13 +68,16 @@ export interface VantikApp {
   auth: AuthService;
   tenants: TenantService;
   keyring: KeyRing;
+  /** Penjadwal; `startServer()` yang memulainya, bukan `createApp()` — lihat catatan di sana. */
+  scheduler: Scheduler;
 }
 
 export function createApp(options: AppOptions = {}): VantikApp {
   const db = options.db ?? openDatabase({ paths: options.paths });
   const keyring = options.keyring ?? KeyRing.fromEnv();
   const audit = new AuditService(db);
-  const auth = new AuthService(db, audit);
+  const outbox = new NotificationOutbox(db);
+  const auth = new AuthService(db, audit, outbox);
   const tenants = new TenantService(db, audit);
   tenants.seedPlans();
 
@@ -125,10 +131,13 @@ export function createApp(options: AppOptions = {}): VantikApp {
     platform: raw.platform ? String(raw.platform) : undefined,
   });
 
-  const loginLimiter = new RateLimiter(10, 60_000);
-  const apiLimiter = new RateLimiter(600, 60_000);
-  const embedLimiter = new RateLimiter(120, 60_000);
-  const idempotency = new IdempotencyStore();
+  // Penghitung batas laju & respons idempoten disimpan di basis data, bukan memori.
+  // Passenger menjalankan beberapa proses dan me-recycle saat idle; keadaan di memori
+  // membuat batasnya terkalikan jumlah proses lalu hilang saat recycle.
+  const loginLimiter = new RateLimiter(10, 60_000, db);
+  const apiLimiter = new RateLimiter(600, 60_000, db);
+  const embedLimiter = new RateLimiter(120, 60_000, db);
+  const idempotency = new IdempotencyStore(db);
 
   /* ================= Publik: kesehatan & autentikasi ================= */
 
@@ -233,6 +242,79 @@ export function createApp(options: AppOptions = {}): VantikApp {
         expiresAt: result.expiresAt,
         deviceRegistered: result.deviceRegistered,
       });
+    }),
+  );
+
+  /* ----- Pemulihan perangkat: jalur PUBLIK (PRD 6.30, SECURITY.md 17.4) -----
+   *
+   * Publik karena pengguna yang perlu memindahkan perangkat justru tidak dapat masuk —
+   * itulah sebabnya ia di sini. Batas laju setingkat login, dan balasannya seragam untuk
+   * kredensial salah maupun email tak dikenal supaya endpoint ini tidak dapat dipakai
+   * memetakan siapa saja yang terdaftar.
+   */
+  app.post(
+    '/api/v1/devices/transfers',
+    loginLimiter.middleware((req) => `transfer:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute((req, res) => {
+      const body = req.body as {
+        email?: string;
+        password?: string;
+        tenantSlug?: string;
+        fingerprint?: Record<string, unknown>;
+        reason?: string;
+      };
+      if (!body.email || !body.password || !body.fingerprint) {
+        throw new ValidationError('error.missing_credentials');
+      }
+
+      const result = auth.beginDeviceTransfer({
+        email: body.email,
+        password: body.password,
+        tenantSlug: body.tenantSlug,
+        fingerprint: readFingerprint(body.fingerprint, req),
+        reason: body.reason,
+        ip: clientIp(req),
+      });
+
+      if (!result.accepted) {
+        res.status(401).json({ error: { key: result.reasonKey, recoveryKey: 'recovery.contact_admin' } });
+        return;
+      }
+
+      // OTP TIDAK ada di respons ini. Ia dikirim ke alamat terdaftar pengguna; itulah
+      // yang membedakan pemilik akun dari orang yang meminjam kredensialnya.
+      res.json({
+        requestId: result.requestId,
+        expiresAt: result.expiresAt,
+        // Dinyatakan apa adanya: bila belum ada transport nyata, pesan menunggu di outbox
+        // dan Admin harus menyampaikannya. Lebih baik pengguna tahu daripada menunggu
+        // pesan yang tidak akan datang.
+        courierAvailable: result.courierAvailable,
+        nextStepKey: 'recovery.enter_transfer_otp',
+      });
+    }),
+  );
+
+  app.post(
+    '/api/v1/devices/transfers/:id/verify-otp',
+    loginLimiter.middleware((req) => `transfer-otp:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute((req, res) => {
+      const otp = String((req.body as { otp?: string }).otp ?? '');
+      if (otp === '') throw new ValidationError('error.missing_credentials');
+
+      const result = auth.verifyDeviceTransferOtp({
+        requestId: req.params.id!,
+        otp,
+        ip: clientIp(req),
+      });
+
+      if (!result.verified) {
+        res.status(400).json({ error: { key: result.reasonKey ?? 'error.transfer_otp_invalid', detail: null } });
+        return;
+      }
+      // Verifikasi OTP BUKAN persetujuan — Admin masih harus menyetujui. Dua gerbang
+      // independen, dan pengguna diberi tahu bahwa ia sekarang menunggu.
+      res.json({ verified: true, awaitingApprovalKey: 'recovery.awaiting_admin_approval' });
     }),
   );
 
@@ -944,6 +1026,26 @@ export function createApp(options: AppOptions = {}): VantikApp {
     new DeviceService(requireContext(req)).approveTransfer(req.params.id!, auth);
     res.json({ ok: true });
   });
+  /**
+   * Outbox notifikasi untuk operator.
+   *
+   * Ada supaya pesan yang belum terkirim TERLIHAT. Selama transport bawaan dipakai,
+   * setiap notifikasi berstatus `queued` — dan tanpa daftar ini, tidak ada cara mengetahui
+   * bahwa OTP pemindahan perangkat sedang menunggu seseorang menyampaikannya.
+   *
+   * Isi pesan sensitif (OTP) TIDAK disertakan: membiarkannya terbaca dari sini akan
+   * meniadakan gunanya faktor itu.
+   */
+  api.get('/notifications/outbox', (req, res) => {
+    const ctx = requireContext(req);
+    ctx.require('device:read', { module: 'Perangkat & Sesi' });
+    res.json({
+      counts: outbox.counts(ctx.tenant.id),
+      entries: outbox.list(ctx.tenant.id),
+      transportConfigured: false,
+    });
+  });
+
   api.get('/sessions', (req, res) => {
     res.json({ sessions: new DeviceService(requireContext(req)).activeSessions() });
   });
@@ -1008,6 +1110,45 @@ export function createApp(options: AppOptions = {}): VantikApp {
     res.json({ trail: tenants.operatorAccessTrail(requireContext(req)) });
   });
 
+  // Pemicu penjadwal didaftarkan SEBELUM router `/api/v1`.
+  //
+  // Router itu memasang `authenticate()`, yang akan menolak permintaan cron dengan 401
+  // sebelum token bersama sempat diperiksa. Kegagalan itu sempat terjadi dan tampak
+  // seperti "token salah" padahal token sudah benar — urutan pendaftaran rute adalah
+  // bagian dari perilakunya, bukan detail kosmetik.
+  /**
+   * Pemicu untuk cron eksternal.
+   *
+   * Ada karena Passenger mematikan proses yang idle: ticker dalam proses berhenti bersama
+   * prosesnya, sehingga situs yang sepi tidak akan mengevaluasi apa pun. Host yang punya
+   * cron dapat memanggil endpoint ini secara berkala dan mendapatkan penjadwalan yang
+   * benar-benar andal.
+   *
+   * Diautentikasi dengan token bersama, BUKAN sesi: cron tidak punya sesi, dan memaksa
+   * satu akun manusia menyimpan kata sandi di crontab jauh lebih buruk. Tanpa
+   * `VANTIK_SCHEDULER_TOKEN` yang diset, endpoint ini menolak semua permintaan —
+   * fail secure, bukan terbuka tanpa sengaja.
+   */
+  app.post(
+    '/api/v1/system/scheduler/run',
+    loginLimiter.middleware((req) => `scheduler:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute(async (req, res) => {
+      const expected = process.env.VANTIK_SCHEDULER_TOKEN;
+      const provided = req.headers['x-vantik-scheduler-token'];
+      if (!expected || typeof provided !== 'string' || provided.length !== expected.length) {
+        res.status(401).json({ error: { key: 'error.unauthenticated', detail: null } });
+        return;
+      }
+      // Perbandingan waktu-konstan: token bersama tidak boleh dapat ditebak
+      // karakter demi karakter dari selisih waktu balasan.
+      if (!timingSafeEqual(Buffer.from(provided, 'utf8'), Buffer.from(expected, 'utf8'))) {
+        res.status(401).json({ error: { key: 'error.unauthenticated', detail: null } });
+        return;
+      }
+      res.json({ ran: await scheduler.runDueJobs({ force: true }) });
+    }),
+  );
+
   app.use('/api/v1', api);
 
   /* --- Webhook payment gateway (tanda tangan diverifikasi) --- */
@@ -1027,9 +1168,79 @@ export function createApp(options: AppOptions = {}): VantikApp {
     }),
   );
 
+
+  /* ================= Penjadwal (PRD 6.4 & 6.16) ================= */
+
+  /**
+   * Sweep ambang batas KPI.
+   *
+   * Inilah yang sebelumnya tidak pernah berjalan: aturan alert ada, tetapi evaluasinya
+   * hanya terjadi bila sebuah panggilan API kebetulan memicunya. Ambang batas yang
+   * terlampaui tengah malam tidak diketahui siapa pun sampai seseorang membuka aplikasi.
+   */
+  const sweepAlerts: JobRunner = async (ctx) => {
+    const period = new Date().toISOString().slice(0, 7);
+    const breaching = new KpiService(ctx).breaching(period);
+    if (breaching.length === 0) return 0;
+
+    const alerts = new AlertService(ctx);
+    let triggered = 0;
+    for (const { kpi, score } of breaching) {
+      const events = await alerts.evaluate({
+        kpiId: kpi.id,
+        value: score.value,
+        label: kpi.name,
+        context: { period, source: 'scheduler' },
+      });
+      triggered += events.length;
+    }
+    return triggered;
+  };
+
+  /**
+   * Laporan terjadwal.
+   *
+   * Cooldown-nya adalah `scheduler_runs` + antrean outbox: laporan yang sama tidak
+   * dikirim ulang dalam satu putaran, dan yang belum terkirim tetap terlihat alih-alih
+   * dicatat sebagai berhasil.
+   */
+  const dispatchScheduledReports: JobRunner = (ctx) => {
+    const due = ctx.db.all<{ id: string; name: string; schedule_cron: string | null; schedule_recipients_json: string | null }>(
+      'reports',
+    );
+    let queued = 0;
+    for (const report of due) {
+      if (!report.schedule_cron || !report.schedule_recipients_json) continue;
+      const recipients = JSON.parse(report.schedule_recipients_json) as string[];
+      for (const recipient of recipients) {
+        outbox.enqueue({
+          tenantId: ctx.tenant.id,
+          purpose: 'scheduled_report',
+          channel: 'email',
+          recipient,
+          subject: `[Vantik] ${report.name}`,
+          body: `Laporan terjadwal "${report.name}" siap diunduh di aplikasi.`,
+        });
+        queued++;
+      }
+    }
+    return queued;
+  };
+
+  const scheduler = new Scheduler(db, audit, {
+    'alerts.sweep': sweepAlerts,
+    'reports.scheduled': dispatchScheduledReports,
+  });
+
+  api.get('/system/scheduler', (req, res) => {
+    const ctx = requireContext(req);
+    ctx.require('alert:read', { module: 'Alert Center' });
+    res.json({ jobs: scheduler.status(), intervalMs: SCHEDULER_INTERVAL_MS });
+  });
+
   app.use(errorHandler());
 
-  return { app, db, audit, auth, tenants, keyring };
+  return { app, db, audit, auth, tenants, keyring, scheduler };
 }
 
 /** Respons 404 JSON konsisten untuk rute yang tidak dikenal. */

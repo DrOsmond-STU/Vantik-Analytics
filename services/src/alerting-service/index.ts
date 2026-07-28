@@ -59,6 +59,16 @@ export interface AlertEventRecord {
  * sungguhan (TESTING.md Bagian 11).
  */
 export interface NotificationTransport {
+  /**
+   * Apakah transport ini benar-benar MENGIRIM?
+   *
+   * Ada karena transport bawaan tidak mengirim apa pun, dan perbedaan itu harus dapat
+   * dibaca oleh pemanggil — bukan disembunyikan di balik nilai kembalian yang seolah
+   * berhasil. Pemanggil yang tahu transportnya tidak mengirim dapat mencatat statusnya
+   * apa adanya dan tidak membuang waktu pada percobaan ulang yang mustahil berhasil.
+   */
+  readonly delivers: boolean;
+
   send(input: {
     channel: Channel;
     recipient: string;
@@ -67,13 +77,26 @@ export interface NotificationTransport {
   }): Promise<{ delivered: boolean; failureReason?: string }>;
 }
 
-/** Transport bawaan: mengantre tanpa mengirim. Dipakai di dev/test. */
+/**
+ * Transport bawaan: mengantre TANPA mengirim.
+ *
+ * Sebelumnya mengembalikan `delivered: true`, yang berarti sistem mencatat pengiriman
+ * yang tidak pernah terjadi — bentuk kegagalan paling berbahaya, karena operator melihat
+ * "terkirim" dan berhenti mencari. Sekarang ia menyatakan dirinya tidak mengirim, dan
+ * pemanggil mencatat statusnya sebagai masih dalam antrean.
+ */
 export class QueueOnlyTransport implements NotificationTransport {
+  readonly delivers = false;
   readonly sent: Array<{ channel: Channel; recipient: string; subject: string }> = [];
 
-  async send(input: { channel: Channel; recipient: string; subject: string; body: string }): Promise<{ delivered: boolean }> {
+  async send(input: {
+    channel: Channel;
+    recipient: string;
+    subject: string;
+    body: string;
+  }): Promise<{ delivered: boolean; failureReason?: string }> {
     this.sent.push({ channel: input.channel, recipient: input.recipient, subject: input.subject });
-    return { delivered: true };
+    return { delivered: false, failureReason: 'no_transport_configured' };
   }
 }
 
@@ -273,15 +296,27 @@ export class AlertService {
       failure_reason: null,
     });
 
+    const subject = `[Vantik] ${rule.name}`;
+    // Nada tulisan: kesalahan/penyimpangan DIJELASKAN, bukan dramatis (BRAND.md 2).
+    const body = `${observation.label}: ${observation.value} (ambang batas ${rule.threshold}).`;
+
+    // Tanpa transport nyata, statusnya tetap `queued` — bukan `delivered` (bohong) dan
+    // bukan `failed` (juga bohong: tidak ada yang gagal, memang tidak ada pengirim).
+    // Percobaan ulang berbackoff pun dilewati: mengulang stub empat kali dengan jeda
+    // 42 detik hanya memperlambat evaluasi aturan tanpa peluang berhasil.
+    if (!this.transport.delivers) {
+      await this.transport.send({ channel, recipient, subject, body });
+      this.ctx.db.update(
+        'alert_deliveries',
+        { id: deliveryId },
+        { outcome: 'queued', failure_reason: 'no_transport_configured' },
+      );
+      return;
+    }
+
     let lastFailure: string | undefined;
     for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt++) {
-      const result = await this.transport.send({
-        channel,
-        recipient,
-        subject: `[Vantik] ${rule.name}`,
-        // Nada tulisan: kesalahan/penyimpangan DIJELASKAN, bukan dramatis (BRAND.md 2).
-        body: `${observation.label}: ${observation.value} (ambang batas ${rule.threshold}).`,
-      });
+      const result = await this.transport.send({ channel, recipient, subject, body });
 
       if (result.delivered) {
         this.ctx.db.update(

@@ -41,7 +41,7 @@ AI Analyst mencakup hampir seluruh modul analitik.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 279 test
+npm test              # 310 test
 npm run test:coverage # dengan ambang cakupan
 ```
 
@@ -74,8 +74,9 @@ Tiga hal yang membuat pemasangan ini mungkin tanpa akses root:
 
 ### VPS / kontainer
 
-`infra/` memuat Dockerfile dan manifest Kubernetes untuk pemasangan yang punya akses root.
-Paket `deploy/` yang sama juga jalan langsung dengan `node app.js`.
+`infra/Dockerfile` untuk pemasangan yang punya akses root; paket `deploy/` yang sama juga
+jalan langsung dengan `node app.js`. `infra/k8s/` baru memuat **network policy** —
+manifest Deployment/Service/Ingress belum ada dan perlu ditulis sesuai klaster tujuan.
 
 ---
 
@@ -110,7 +111,8 @@ vantik-analytics/
 │   └── SAST-TRIAGE.md            # temuan CodeQL yang tidak diperbaiki + alasannya
 └── infra/
     ├── shared-hosting/           # .htaccess, contoh .env produksi
-    └── …                         # Dockerfile, manifest Kubernetes
+    ├── Dockerfile
+    └── k8s/                      # baru network policy; Deployment/Service belum ada
 ```
 
 ---
@@ -127,7 +129,7 @@ berbeda-beda dan dinyatakan jujur di bawah — mengikuti prioritas rilis PRD Bag
 | 3. Analitik Cerdas (AI) | AI Analytics, Forecast Analytics, RCA, Data Discovery, AI Narrative Report | Fungsional dengan penyedia **deterministik** bawaan; antarmuka `LlmProvider` siap dipasangi LLM eksternal/self-hosted |
 | 4. Analisis Statistik | Statistik Deskriptif, Uji Hipotesis, Regresi & Korelasi | Fungsional penuh, terverifikasi terhadap nilai rujukan |
 | 5. Manajemen Data | Dataset, Koneksi Eksternal, Data Modeling, Data Quality Center, KPI Center | Fungsional penuh |
-| 6. Monitoring | Alert Center, Digital Twin | Fungsional; pengiriman kanal lewat antarmuka `NotificationTransport`, ingest sensor lewat HTTP (MQTT belum) |
+| 6. Monitoring | Alert Center, Digital Twin | Fungsional dengan **penjadwal**: ambang batas KPI disapu berkala, bukan hanya saat ada panggilan API. Pengiriman kanal lewat `NotificationTransport`, ingest sensor lewat HTTP (MQTT belum) |
 | 7. Administrasi Sistem | Master Pegawai, Otorisasi User, Log Aktivitas, Perangkat & Sesi | Fungsional penuh |
 | 8. Langganan & Billing | Manajemen Tenant, Langganan & Paket, Billing & Faktur, Usage Metering & Kuota | Fungsional; *payment gateway* lewat webhook terverifikasi tanda tangan |
 
@@ -139,8 +141,11 @@ Dinyatakan terbuka, bukan disembunyikan:
   (`error.xlsx_conversion_required`), bukan diam-diam menghasilkan dataset kosong.
 - **Driver koneksi eksternal nyata** — `ConnectionProbe` memvalidasi bentuk konfigurasi;
   implementasi driver PostgreSQL/MySQL/Oracle/REST dipasang lewat antarmuka yang sama.
-- **Pengiriman notifikasi nyata** — `QueueOnlyTransport` mengantre tanpa mengirim;
-  SMTP/WhatsApp/Telegram/SMS/Teams/Slack dipasang lewat `NotificationTransport`.
+- **Pengiriman notifikasi nyata** — `QueueOnlyTransport` mengantre tanpa mengirim, dan
+  **menyatakannya**: `delivers = false`, statusnya tetap `queued`, dan antreannya terlihat
+  di `GET /api/v1/notifications/outbox`. SMTP/WhatsApp/Telegram/SMS/Teams/Slack dipasang
+  lewat `NotificationTransport`. Sampai itu dipasang, OTP pemindahan perangkat menunggu di
+  outbox dan Admin harus menyampaikannya.
 - **SSO SAML/OIDC** — skema & kolom `auth_provider` sudah ada; alur federasi belum. (MFA berbasis TOTP **sudah** ada — lihat tabel kontrol keamanan.)
 - **Ingest MQTT** — Digital Twin menerima pembacaan sensor lewat REST; gateway MQTT belum.
 - **Ekspor PDF biner** — `renderDocument()` mengembalikan struktur dokumen; render PDF
@@ -180,6 +185,8 @@ Yang membuatnya sulit dilanggar tanpa sengaja:
 | **CSRF** (4) | Cookie sesi hanya diterima untuk metode yang **tidak** mengubah keadaan; setiap penulisan wajib membawa `Authorization: Bearer`. Peramban tidak dapat menambahkan header itu pada permintaan lintas-situs tanpa lolos preflight CORS, sehingga kelas serangannya hilang — bukan hanya dipersulit oleh `SameSite=Lax`. |
 | **Keacakan** (4) | OTP pemindahan perangkat dan bagian acak seluruh ID objek berasal dari `randomInt`/`randomBytes`. `Math.random()` dapat diprediksi dari beberapa keluaran, dan OTP adalah faktor autentikasi. |
 | **MFA wajib per peran** (4) | Lima peran menandai `mfaRequired`; penegakannya di `RequestContext.require()`, sehingga berlaku untuk **setiap** modul tanpa tiap rute perlu mengingatnya. Sebelum MFA aktif, pemegang peran itu dapat masuk tetapi tidak berwenang apa pun. TOTP diimplementasikan di atas `node:crypto` (tanpa dependensi tambahan) dan diuji terhadap vektor resmi RFC 6238. |
+| **Pemulihan perangkat** (17.4) | Pengguna dengan perangkat baru punya jalur nyata: ajukan (kata sandi diverifikasi) → OTP ke alamat **terdaftar**, bukan ke layar peminta → verifikasi → persetujuan Admin. Dua gerbang independen; OTP tidak pernah ada di respons API. |
+| **Keadaan runtime dibagi antar-proses** | Penghitung batas laju dan respons idempoten ada di tabel, bukan memori. Passenger menjalankan beberapa proses dan me-recycle saat idle; keadaan di memori membuat batas "10/menit" menjadi 10 × jumlah proses lalu hilang. |
 | **Batas masukan tidak tepercaya** (7) | Panjang User-Agent, daftar font, pertanyaan AI, dan formula KPI dibatasi sebelum menyentuh regex. Di shared hosting CPU adalah kuota: satu permintaan yang memaksa penelusuran ulang polinomial dapat menghabiskan jatah seluruh situs. |
 
 Dokumen juga menuntut kejujuran: *device fingerprint adalah pengendali komersial, bukan
@@ -194,7 +201,7 @@ pelanggaran baru di masa depan.
 
 ## Pengujian
 
-279 test, mengikuti TESTING.md. Penamaan `TC-XX-NN` mengikuti pola Bagian 3.
+310 test, mengikuti TESTING.md. Penamaan `TC-XX-NN` mengikuti pola Bagian 3.
 
 | Berkas | Cakupan |
 |---|---|
@@ -206,8 +213,10 @@ pelanggaran baru di masa depan.
 | `tests/sqlite.test.ts` | Kesetaraan **kedua** driver SQLite — jalur `node:sqlite` yang dipakai shared hosting tidak boleh berperilaku berbeda dari `better-sqlite3` |
 | `tests/billing.test.ts` | Arah upgrade/downgrade, pro-rata, kuota terlampaui, verifikasi tanda tangan webhook, dan penurunan akses bertahap akibat tunggakan |
 | `tests/mfa.test.ts` | Vektor uji **resmi RFC 6238**, anti-replay, kode pemulihan sekali pakai, tantangan terikat perangkat, dan penegakan `mfaRequired` per peran |
+| `tests/device-transfer.test.ts` | Perjalanan lengkap terkunci → pulih → masuk kembali, dan bahwa jalur pemulihan bukan jalan pintas melewati device binding |
+| `tests/scheduler.test.ts` | Klaim pekerjaan (tidak berjalan dua kali), ketahanan saat satu tenant gagal, dan kewenangan sempit aktor sistem |
 
-Cakupan saat ini: **84,6% baris / 85% fungsi**. Ambang ditegakkan di `vitest.config.ts` dan
+Cakupan saat ini: **84,1% baris / 84% fungsi**. Ambang ditegakkan di `vitest.config.ts` dan
 memblokir merge bila turun.
 
 ---

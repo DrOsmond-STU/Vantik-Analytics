@@ -211,6 +211,10 @@ Mengikuti DEPLOYMENT.md Bagian 10 (checklist pra-peluncuran R1) dan SECURITY.md:
 - [ ] **Verifikasi dua langkah admin sudah diaktifkan** (lihat 8.1 — wajib sebelum admin dapat bekerja)
 - [ ] **Kode pemulihan admin sudah dicetak/disimpan di luar sistem**
 - [ ] Backup `~/vantik-data/` masuk jadwal backup hosting
+- [ ] **Cron penjadwal terpasang** bila hosting mendukungnya (lihat 8.2) — tanpa itu,
+      notifikasi ambang batas hanya dievaluasi selama ada proses yang hidup
+- [ ] Antrean notifikasi diperiksa (`GET /api/v1/notifications/outbox`) — selama belum ada
+      transport nyata, setiap pesan berstatus `queued` dan perlu disampaikan manual
 
 ### 8.1 Aktifkan verifikasi dua langkah SEBELUM hal lain
 
@@ -247,6 +251,51 @@ Yang perlu diketahui operator:
 - Lima kali salah pada satu sesi verifikasi mematikan sesi itu (harus login ulang);
   sepuluh kegagalan berturut-turut mengunci akun sementara.
 - Peran yang mewajibkan MFA **tidak dapat** mematikannya sendiri.
+
+### 8.2 Penjadwal: pasang cron bila hosting mendukungnya
+
+Aplikasi punya ticker dalam proses yang menyapu ambang batas KPI dan laporan terjadwal
+setiap 5 menit, plus penyusulan saat proses dinyalakan. Itu cukup untuk situs yang ramai,
+**tetapi Passenger mematikan proses yang idle** — pada situs yang sepi, tidak ada proses
+yang hidup untuk melakukan sapuan, sehingga ambang batas yang terlampaui tengah malam tidak
+diketahui siapa pun sampai ada orang membuka aplikasi.
+
+Bila hosting Anda punya cron, itu dapat diperbaiki sepenuhnya:
+
+1. Isi `VANTIK_SCHEDULER_TOKEN` di `.env` dengan nilai acak
+   (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`).
+2. Tambahkan cron job:
+
+```
+*/10 * * * * curl -fsS -X POST https://analitik.contoh.id/api/v1/system/scheduler/run \
+               -H "X-Vantik-Scheduler-Token: TOKEN_ANDA" >/dev/null
+```
+
+Endpoint itu diautentikasi dengan token bersama, **bukan sesi**: cron tidak punya sesi, dan
+menyimpan kata sandi akun manusia di crontab jauh lebih buruk. Tanpa token yang diset,
+endpoint MENOLAK semua permintaan — terbuka tanpa sengaja bukan pilihan.
+
+Status pekerjaan dapat dibaca di `GET /api/v1/system/scheduler`: kapan terakhir berjalan,
+hasilnya, dan tenant mana yang gagal.
+
+### 8.3 Notifikasi belum benar-benar terkirim
+
+Ini perlu dibaca sebelum mengandalkan Alert Center atau pemulihan perangkat.
+
+Transport bawaan **mengantre tanpa mengirim**, dan menyatakannya apa adanya: status pesan
+tetap `queued`, bukan `delivered`. Konsekuensinya nyata:
+
+- Notifikasi ambang batas tidak sampai ke email/WhatsApp penerima.
+- **OTP pemindahan perangkat** menunggu di antrean. Pengguna yang berganti perangkat tidak
+  akan menerima kodenya sampai ada transport nyata — sampai itu terpasang, Admin harus
+  membacanya dari antrean dan menyampaikannya lewat kanal terpercaya.
+
+Periksa antreannya di `GET /api/v1/notifications/outbox` (butuh izin `device:read`). Isi
+pesan sensitif seperti OTP **tidak** disertakan di daftar itu — membiarkannya terbaca akan
+membuat siapa pun dengan izin tersebut dapat menyelesaikan pemindahan perangkat orang lain.
+
+Untuk mengaktifkan pengiriman nyata, pasang implementasi `NotificationTransport`
+(`services/src/alerting-service/index.ts`) dan setel `delivers = true`.
 
 ---
 

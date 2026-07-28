@@ -2,6 +2,7 @@
  * Autentikasi & manajemen sesi — SECURITY.md Bagian 4 & 17, PRD 6.30.
  */
 import { randomInt } from 'node:crypto';
+import type { NotificationOutbox } from '../platform/outbox.ts';
 import type { AuditService } from '../audit-service/index.ts';
 import { newId, nowIso, type Db } from '../platform/db.ts';
 import { AppError, UnauthenticatedError, ValidationError } from '../platform/errors.ts';
@@ -130,6 +131,16 @@ export class AuthService {
   constructor(
     private readonly db: Db,
     private readonly audit: AuditService,
+    /**
+     * Outbox opsional.
+     *
+     * Opsional supaya pengujian unit dapat membangun AuthService tanpa merangkai
+     * penyimpanan pesan. Bila tidak diberikan, OTP pemindahan perangkat tetap dibuat dan
+     * di-hash, tetapi tidak ada yang mengirimkannya — dan `beginDeviceTransfer()`
+     * mengembalikan `courierAvailable: false` supaya pemanggil dapat menyatakan itu
+     * kepada pengguna alih-alih membiarkannya menunggu pesan yang tak akan datang.
+     */
+    private readonly outbox?: NotificationOutbox,
   ) {}
 
   /* ---------------------------------------------------------------- */
@@ -1189,6 +1200,146 @@ export class AuthService {
     // OTP dikembalikan agar dapat dikirim lewat kanal terpisah (email); tidak disimpan
     // sebagai teks biasa.
     return { requestId: id, otp, expiresAt };
+  }
+
+  /**
+   * Pintu masuk PUBLIK jalur pemulihan perangkat.
+   *
+   * Harus publik: pengguna yang perlu memindahkan perangkat justru TIDAK dapat masuk —
+   * itu sebabnya ia di sini. Sebelumnya `requestDeviceTransfer()` tidak dipanggil rute
+   * mana pun, sehingga `recovery.request_device_transfer` yang dijanjikan pada penolakan
+   * `error.device_not_bound` menunjuk ke jalur yang tidak ada: pengguna sah dengan laptop
+   * baru terkunci permanen.
+   *
+   * Kata sandi tetap diverifikasi di sini. Tanpa itu, siapa pun yang tahu email seseorang
+   * dapat membanjiri kotak masuknya dengan OTP dan memicu peninjauan Admin berulang.
+   *
+   * OTP TIDAK PERNAH dikembalikan ke pemanggil. Ia dikirim ke alamat TERDAFTAR pengguna
+   * lewat outbox. Itulah inti kontrolnya: yang dibuktikan bukan "saya tahu kata sandinya"
+   * (itu sudah dibuktikan) melainkan "saya menguasai kontak terdaftar akun ini" — persis
+   * pembeda antara pemilik akun dan rekan yang meminjam kredensial, yang oleh komentar
+   * di atas disebut penyalahgunaan paling mungkin.
+   */
+  beginDeviceTransfer(input: {
+    email: string;
+    password: string;
+    tenantSlug?: string;
+    fingerprint: FingerprintComponents;
+    reason?: string;
+    ip?: string | null;
+  }):
+    | { accepted: true; requestId: string; expiresAt: string; courierAvailable: boolean }
+    | { accepted: false; reasonKey: string } {
+    const email = input.email.trim().toLowerCase();
+    const user = this.findUser(email, input.tenantSlug);
+
+    // Balasan seragam untuk email tak dikenal, kata sandi salah, dan akun nonaktif:
+    // endpoint publik ini tidak boleh menjadi cara memetakan siapa saja yang terdaftar.
+    if (!user || !user.password_hash || user.status !== 'active' || !verifyPassword(input.password, user.password_hash)) {
+      this.audit.recordDenial({
+        tenantId: user?.tenant_id ?? null,
+        actorUserId: user?.id ?? null,
+        actorLabel: email,
+        actorIp: input.ip ?? null,
+        action: 'device.transfer_request_denied',
+        module: 'Perangkat & Sesi',
+        detail: { reason: 'bad_credentials' },
+      });
+      return { accepted: false, reasonKey: 'error.invalid_credentials' };
+    }
+
+    // Permintaan lama dimatikan lebih dulu: beberapa permintaan hidup bersamaan
+    // mengalikan jumlah tebakan OTP yang tersedia.
+    this.db
+      .prepare("UPDATE device_transfer_requests SET status = 'expired' WHERE user_id = ? AND status = 'pending'")
+      .run(user.id);
+
+    const { requestId, otp, expiresAt } = this.requestDeviceTransfer({
+      tenantId: user.tenant_id,
+      userId: user.id,
+      actorLabel: email,
+      fingerprint: input.fingerprint,
+      reason: input.reason,
+    });
+
+    this.outbox?.enqueue({
+      tenantId: user.tenant_id,
+      purpose: 'device_transfer_otp',
+      channel: 'email',
+      recipient: user.email,
+      subject: 'Kode verifikasi pemindahan perangkat',
+      body:
+        `Kode verifikasi pemindahan perangkat Anda: ${otp}\n` +
+        `Berlaku sampai ${expiresAt}.\n\n` +
+        'Bila Anda tidak meminta pemindahan perangkat, abaikan pesan ini dan hubungi Admin.',
+      // Ditandai sensitif supaya pembaca outbox tidak dapat membaca OTP orang lain.
+      sensitive: true,
+    });
+
+    return { accepted: true, requestId, expiresAt, courierAvailable: Boolean(this.outbox) };
+  }
+
+  /**
+   * Verifikasi OTP pemindahan perangkat.
+   *
+   * `approveTransfer()` menuntut `otp_verified === 1`, tetapi sebelumnya TIDAK ADA kode
+   * yang pernah menyetel kolom itu — gerbangnya mustahil dilewati, sehingga persetujuan
+   * Admin pun selalu gagal. Ini yang menutupnya.
+   */
+  verifyDeviceTransferOtp(input: {
+    requestId: string;
+    otp: string;
+    ip?: string | null;
+  }): { verified: boolean; reasonKey?: string } {
+    const request = this.db
+      .prepare('SELECT * FROM device_transfer_requests WHERE id = ?')
+      .get(input.requestId) as
+      | {
+          id: string;
+          tenant_id: string;
+          user_id: string;
+          otp_hash: string;
+          otp_verified: number;
+          status: string;
+          expires_at: string;
+        }
+      | undefined;
+
+    if (!request || request.status !== 'pending' || Date.parse(request.expires_at) <= Date.now()) {
+      return { verified: false, reasonKey: 'error.transfer_not_pending' };
+    }
+    if (request.otp_verified === 1) return { verified: true };
+
+    // Perbandingan atas HASH, bukan teks: OTP tidak pernah disimpan terbaca.
+    if (sha256(input.otp.replace(/\s/g, '')) !== request.otp_hash) {
+      this.audit.recordDenial({
+        tenantId: request.tenant_id,
+        actorUserId: request.user_id,
+        actorLabel: request.user_id,
+        actorIp: input.ip ?? null,
+        action: 'device.transfer_otp_failed',
+        module: 'Perangkat & Sesi',
+        detail: { requestId: request.id },
+      });
+      return { verified: false, reasonKey: 'error.transfer_otp_invalid' };
+    }
+
+    this.db.prepare('UPDATE device_transfer_requests SET otp_verified = 1 WHERE id = ?').run(request.id);
+    this.audit.record({
+      tenantId: request.tenant_id,
+      actorUserId: request.user_id,
+      actorLabel: request.user_id,
+      actorIp: input.ip ?? null,
+      action: 'device.transfer_otp_verified',
+      module: 'Perangkat & Sesi',
+      objectType: 'device_transfer',
+      objectId: request.id,
+      severity: 'notice',
+      // Verifikasi OTP BUKAN persetujuan. Admin masih harus menyetujui — dua gerbang
+      // independen, sesuai PRD 6.30.
+      detail: { awaitingAdminApproval: true },
+    });
+    return { verified: true };
   }
 
   verifyTransferOtp(requestId: string, otp: string): boolean {
