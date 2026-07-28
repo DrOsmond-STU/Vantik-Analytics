@@ -8,6 +8,7 @@
 import { newId, nowIso } from '../platform/db.ts';
 import { NotFoundError, ValidationError } from '../platform/errors.ts';
 import type { RequestContext } from '../platform/context.ts';
+import type { NotificationOutbox } from '../platform/outbox.ts';
 
 export type Channel = 'email' | 'whatsapp' | 'telegram' | 'sms' | 'teams' | 'slack';
 
@@ -108,6 +109,16 @@ export class AlertService {
   constructor(
     private readonly ctx: RequestContext,
     private readonly transport: NotificationTransport = new QueueOnlyTransport(),
+    /**
+     * Antrean tempat pesan yang tidak dapat dikirim menunggu, LENGKAP DENGAN ISINYA.
+     *
+     * `alert_deliveries` mencatat percobaan pengiriman tetapi tidak menyimpan badan
+     * pesan, sehingga operator tidak dapat menyampaikannya manual dari sana. Panduan
+     * pemasangan menjanjikan bahwa selama belum ada transport nyata, pesan tertunda
+     * dapat dibaca dan disampaikan lewat kanal terpercaya — janji itu hanya benar bila
+     * isinya benar-benar tersimpan di suatu tempat.
+     */
+    private readonly outbox?: NotificationOutbox,
   ) {}
 
   listRules(): Array<Omit<AlertRuleRecord, 'channels_json' | 'recipients_json'> & { channels: Channel[]; recipients: string[] }> {
@@ -311,6 +322,17 @@ export class AlertService {
         { id: deliveryId },
         { outcome: 'queued', failure_reason: 'no_transport_configured' },
       );
+      // Isinya disimpan di outbox supaya operator dapat membacanya dan menyampaikan
+      // sendiri. Tanpa ini, `GET /notifications/outbox` melaporkan antrean kosong
+      // sementara notifikasi ambang batas menumpuk tanpa pernah sampai ke siapa pun.
+      this.outbox?.enqueue({
+        tenantId: this.ctx.tenant.id,
+        purpose: 'alert_notification',
+        channel,
+        recipient,
+        subject,
+        body,
+      });
       return;
     }
 

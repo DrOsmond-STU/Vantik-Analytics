@@ -6,13 +6,23 @@
  * logistik, operasional) — bukan didominasi satu industri. Seluruh data di sini
  * sintetis (TESTING.md Bagian 11: data produksi tidak pernah dipakai).
  */
+import { createHmac } from 'node:crypto';
 import { createApp } from '../app.ts';
 import { AlertService } from '../alerting-service/index.ts';
-import { DatasetService, KpiService } from '../data-platform-service/index.ts';
-import { DashboardService } from '../designer-service/index.ts';
+import {
+  ConnectionService,
+  DataModelingService,
+  DatasetService,
+  KpiService,
+} from '../data-platform-service/index.ts';
+import { DashboardService, EmbedService, ReportService } from '../designer-service/index.ts';
 import { DigitalTwinService } from '../iot-gateway-service/index.ts';
 import { BalancedScorecardService } from '../presentation-service/index.ts';
 import { AuthorizationService, EmployeeService } from '../identity-service/index.ts';
+import { AiAnalyticsService, ForecastService, NarrativeService, RcaService } from '../ai-engine-service/index.ts';
+import { BillingService } from '../billing-service/index.ts';
+import { MeteringService } from '../metering-service/index.ts';
+import { NotificationOutbox } from './outbox.ts';
 import { RequestContext, loadFeatureFlags, toTenantInfo } from './context.ts';
 import type { Db } from './db.ts';
 import type { AuditService } from '../audit-service/index.ts';
@@ -64,8 +74,17 @@ function pseudo(seed: number, index: number): number {
   return x - Math.floor(x);
 }
 
-export function seed(): void {
-  const { db, audit, tenants } = createApp();
+/**
+ * `seed()` bersifat async karena sebagian layanan memang async (ingest sensor,
+ * evaluasi alert, tanya-jawab AI).
+ *
+ * Sebelumnya bagian async dijalankan sebagai `void (async () => { … })()`, sehingga
+ * kegagalan di dalamnya menjadi unhandled rejection: `npm run seed` dapat keluar dengan
+ * kode 0 sambil meninggalkan basis data separuh terisi, dan tidak ada yang tahu. Sekarang
+ * kegagalan merambat ke pemanggil dan prosesnya keluar dengan kode bukan-nol.
+ */
+export async function seed(): Promise<void> {
+  const { db, audit, tenants, keyring } = createApp();
 
   const existing = db.prepare("SELECT id FROM tenants WHERE slug = 'demo'").get() as { id: string } | undefined;
   if (existing) {
@@ -98,10 +117,20 @@ export function seed(): void {
   const authorization = new AuthorizationService(ctx);
   const datasets = new DatasetService(ctx);
   const kpis = new KpiService(ctx);
-  const alerts = new AlertService(ctx);
+  const alerts = new AlertService(ctx, undefined, new NotificationOutbox(db));
   const dashboards = new DashboardService(ctx);
   const twin = new DigitalTwinService(ctx);
   const bsc = new BalancedScorecardService(ctx);
+  const metering = new MeteringService(ctx);
+  const modeling = new DataModelingService(ctx);
+  const connections = new ConnectionService(ctx, keyring, undefined, metering);
+  const reports = new ReportService(ctx);
+  const embed = new EmbedService(ctx, metering);
+  const ai = new AiAnalyticsService(ctx, undefined, metering);
+  const forecast = new ForecastService(ctx);
+  const rca = new RcaService(ctx);
+  const narrative = new NarrativeService(ctx);
+  const billing = new BillingService(ctx, metering);
 
   /* ---------------- Master Pegawai lintas divisi ---------------- */
 
@@ -373,26 +402,395 @@ export function seed(): void {
 
   // Pembacaan historis dengan tren naik pada getaran HVAC agar prediksi kegagalan bermakna.
   const readingsPerSensor = 60;
-  void (async () => {
-    for (let i = 0; i < readingsPerSensor; i++) {
-      const observedAt = new Date(Date.now() - (readingsPerSensor - i) * 3_600_000).toISOString();
-      await twin.ingestReading({ assetCode: 'HVAC-01', sensorCode: 'temperature', value: 22 + pseudo(9, i) * 3, observedAt });
-      await twin.ingestReading({ assetCode: 'HVAC-01', sensorCode: 'vibration', value: 2.4 + i * 0.045 + pseudo(10, i) * 0.3, observedAt });
-      await twin.ingestReading({ assetCode: 'HVAC-01', sensorCode: 'power', value: 60 + pseudo(11, i) * 20, observedAt });
-      await twin.ingestReading({ assetCode: 'LAB-FRZ-02', sensorCode: 'temperature', value: -78 + pseudo(12, i) * 3, observedAt });
-      await twin.ingestReading({ assetCode: 'LAB-FRZ-02', sensorCode: 'power', value: 28 + pseudo(13, i) * 8, observedAt });
-      await twin.ingestReading({ assetCode: 'FLEET-07', sensorCode: 'fuel_level', value: Math.max(5, 85 - i * 1.1), observedAt });
-      await twin.ingestReading({ assetCode: 'FLEET-07', sensorCode: 'engine_temp', value: 88 + pseudo(14, i) * 12, observedAt });
-    }
-    twin.predictFailure(ctx.db.get<{ id: string }>('assets', { code: 'HVAC-01' })!.id);
+  for (let i = 0; i < readingsPerSensor; i++) {
+    const observedAt = new Date(Date.now() - (readingsPerSensor - i) * 3_600_000).toISOString();
+    await twin.ingestReading({ assetCode: 'HVAC-01', sensorCode: 'temperature', value: 22 + pseudo(9, i) * 3, observedAt });
+    await twin.ingestReading({ assetCode: 'HVAC-01', sensorCode: 'vibration', value: 2.4 + i * 0.045 + pseudo(10, i) * 0.3, observedAt });
+    await twin.ingestReading({ assetCode: 'HVAC-01', sensorCode: 'power', value: 60 + pseudo(11, i) * 20, observedAt });
+    await twin.ingestReading({ assetCode: 'LAB-FRZ-02', sensorCode: 'temperature', value: -78 + pseudo(12, i) * 3, observedAt });
+    await twin.ingestReading({ assetCode: 'LAB-FRZ-02', sensorCode: 'power', value: 28 + pseudo(13, i) * 8, observedAt });
+    await twin.ingestReading({ assetCode: 'FLEET-07', sensorCode: 'fuel_level', value: Math.max(5, 85 - i * 1.1), observedAt });
+    await twin.ingestReading({ assetCode: 'FLEET-07', sensorCode: 'engine_temp', value: 88 + pseudo(14, i) * 12, observedAt });
+  }
+  const hvacId = ctx.db.get<{ id: string }>('assets', { code: 'HVAC-01' })!.id;
+  twin.predictFailure(hvacId);
 
-    console.log('[seed] done');
-    console.log('[seed] tenant slug : demo');
-    console.log('[seed] admin login : admin@demo.vantik.id / VantikDemo#2026');
-    console.log('[seed] other users : rizky|sari|bagas|maya|andi|putri @demo.vantik.id (same password)');
-    db.close();
-  })();
+  /* ---------------- Tiket pemeliharaan (PRD 6.17) ---------------- */
+
+  // Prediksi kegagalan tanpa tindak lanjut hanya menjadi angka di layar. Satu tiket
+  // terbuka memperlihatkan alurnya sampai selesai.
+  twin.createTicket(hvacId, {
+    title: 'Getaran HVAC-01 naik terus selama 60 jam — jadwalkan inspeksi bearing',
+    priority: 'high',
+    externalRef: 'WO-2026-0417',
+  });
+  twin.createTicket(ctx.db.get<{ id: string }>('assets', { code: 'FLEET-07' })!.id, {
+    title: 'Kendaraan Dinas 07: isi bahan bakar sebelum jadwal operasional berikutnya',
+    priority: 'low',
+  });
+
+  /* ---------------- Koneksi Eksternal (PRD 6.12) ---------------- */
+
+  // Kredensial di sini sintetis. Yang ditanam sengaja BUKAN kredensial yang bekerja:
+  // seed yang berisi kata sandi nyata akan berakhir di riwayat commit selamanya.
+  const crm = connections.create({
+    name: 'CRM Produksi (PostgreSQL)',
+    kind: 'postgresql',
+    host: 'db-crm.internal.demo.id',
+    port: 5432,
+    databaseName: 'crm',
+    username: 'vantik_reader',
+    secrets: { password: 'sandi-contoh-tidak-berlaku' },
+    schedule: 'hourly',
+    readOnly: true,
+  });
+  connections.create({
+    name: 'API Gudang (REST)',
+    kind: 'rest_api',
+    host: 'api.gudang.demo.id',
+    options: { basePath: '/v2/stok', authHeader: 'X-Api-Key' },
+    secrets: { apiKey: 'kunci-contoh-tidak-berlaku' },
+    schedule: 'daily',
+    readOnly: true,
+  });
+  const legacy = connections.create({
+    name: 'Basis Data Warisan (MySQL)',
+    kind: 'mysql',
+    host: 'legacy.demo.id',
+    port: 3306,
+    databaseName: 'helpdesk_lama',
+    username: 'migrasi',
+    secrets: { password: 'sandi-contoh-tidak-berlaku' },
+    schedule: 'manual',
+    readOnly: true,
+  });
+
+  // Riwayat sinkronisasi memuat KEDUA hasil. Riwayat yang hanya berisi keberhasilan
+  // membuat operator tidak pernah melihat bentuk kegagalan sampai kegagalan pertama terjadi.
+  await connections.sync(crm.id, async () => ({
+    rows: Array.from({ length: 240 }, (_, i) => ({
+      id_pelanggan: `CUST-${1000 + i}`,
+      segmen: ['Korporat', 'UMKM', 'Ritel'][i % 3],
+      nilai_kontrak: Math.round(5_000_000 + pseudo(21, i) * 45_000_000),
+    })),
+  }));
+  await connections.sync(legacy.id, async () => {
+    throw new Error('host tidak dapat dijangkau dari jaringan aplikasi');
+  });
+
+  /* ---------------- Data Modeling & kamus bisnis (PRD 6.13) ---------------- */
+
+  modeling.createTable({
+    name: 'fakta_tiket',
+    kind: 'fact',
+    grain: 'Satu baris per tiket layanan',
+    description: 'Tabel fakta utama untuk analisis beban dan mutu layanan',
+  });
+  modeling.createTable({ name: 'dim_wilayah', kind: 'dimension', scdType: 2, description: 'Hierarki wilayah operasional' });
+  modeling.createTable({ name: 'dim_kanal', kind: 'dimension', scdType: 1, description: 'Kanal masuknya tiket' });
+  modeling.createTable({ name: 'dim_waktu', kind: 'dimension', description: 'Kalender bulanan' });
+
+  modeling.addField({ tableName: 'fakta_tiket', name: 'jumlah_tiket', dataType: 'integer', role: 'measure' });
+  modeling.addField({ tableName: 'fakta_tiket', name: 'waktu_respons_menit', dataType: 'number', role: 'measure' });
+  modeling.addField({ tableName: 'fakta_tiket', name: 'skor_csat', dataType: 'number', role: 'measure' });
+  modeling.addField({
+    tableName: 'fakta_tiket',
+    name: 'tiket_per_menit_respons',
+    dataType: 'number',
+    role: 'measure',
+    formula: 'SUM(jumlah_tiket) / AVG(waktu_respons_menit)',
+    description: 'Ukuran turunan: beban relatif terhadap kecepatan respons',
+  });
+  modeling.addField({ tableName: 'fakta_tiket', name: 'wilayah', dataType: 'text', role: 'dimension' });
+  modeling.addField({ tableName: 'fakta_tiket', name: 'kanal', dataType: 'text', role: 'dimension' });
+  modeling.addField({ tableName: 'fakta_tiket', name: 'periode', dataType: 'text', role: 'time' });
+  modeling.addField({ tableName: 'dim_wilayah', name: 'nama_wilayah', dataType: 'text', role: 'key' });
+  modeling.addField({ tableName: 'dim_kanal', name: 'nama_kanal', dataType: 'text', role: 'key' });
+  modeling.addField({ tableName: 'dim_waktu', name: 'bulan', dataType: 'text', role: 'time' });
+
+  const dictionary: Array<[string, string, string]> = [
+    ['CSAT', 'Customer Satisfaction Score — rata-rata skor kepuasan pelanggan pada skala 1–5, diukur dari survei pasca-interaksi.', 'Average post-interaction customer satisfaction score on a 1–5 scale.'],
+    ['SLA', 'Service Level Agreement — batas waktu respons yang dijanjikan kepada pelanggan, dihitung sejak tiket masuk.', 'Promised response time limit, measured from ticket creation.'],
+    ['FCR', 'First Contact Resolution — proporsi tiket yang selesai pada kontak pertama tanpa eskalasi.', 'Share of tickets resolved on first contact without escalation.'],
+    ['Tiket Eskalasi', 'Tiket yang dipindahkan ke jenjang penanganan lebih tinggi karena melebihi SLA atau butuh kewenangan khusus.', 'A ticket moved to a higher support tier after breaching SLA or needing special authority.'],
+    ['Wilayah', 'Unit geografis operasional. Dipakai sebagai dimensi pembatas Row-Level Security bagi peran berbasis wilayah.', 'Operational geographic unit, also used as the Row-Level Security dimension for region-scoped roles.'],
+  ];
+  const rizkyEmployee = ctx.db.get<{ id: string }>('employee_master', { email: 'rizky@demo.vantik.id' });
+  for (const [term, id_, en] of dictionary) {
+    modeling.upsertTerm({ term, definitionId: id_, definitionEn: en, ownerEmployeeId: rizkyEmployee?.id });
+  }
+
+  /* ---------------- Report Designer (PRD 6.5) ---------------- */
+
+  const monthly = reports.create({
+    name: 'Laporan Kinerja Layanan Bulanan',
+    pageSize: 'A4',
+    orientation: 'portrait',
+    watermark: 'none',
+    classification: 'internal',
+  });
+  reports.saveBlocks(monthly.id, [
+    { id: 'b1', type: 'heading', content: 'Kinerja Layanan Pelanggan' },
+    { id: 'b2', type: 'text', content: 'Ringkasan bulanan volume tiket, kecepatan respons, dan kepuasan pelanggan per wilayah. Seluruh angka berasal dari KPI Center; tidak ada angka yang dihitung ulang di dalam laporan ini.' },
+    { id: 'b3', type: 'chart', datasetId: tickets.dataset.id, config: { kind: 'line', measure: 'skor_csat', dimension: 'periode' } },
+    { id: 'b4', type: 'table', datasetId: tickets.dataset.id, config: { groupBy: 'wilayah', measures: ['jumlah_tiket', 'skor_csat'] } },
+    { id: 'b5', type: 'pagebreak' },
+    { id: 'b6', type: 'heading', content: 'Catatan Metodologi' },
+    { id: 'b7', type: 'text', content: 'Baris dengan nilai kosong dikeluarkan dari perhitungan rata-rata (listwise deletion) dan jumlahnya dilaporkan di Data Quality Center.' },
+    { id: 'b8', type: 'signature' },
+  ]);
+  reports.setSignature(monthly.id, {
+    signerName: 'Rizky Pratama',
+    position: 'Supervisor Layanan Pelanggan',
+    place: 'Jakarta',
+  });
+  reports.schedule(monthly.id, '0 7 1 * *', ['sari@demo.vantik.id', 'rizky@demo.vantik.id']);
+
+  const quarterly = reports.create({
+    name: 'Ringkasan Eksekutif Kuartalan',
+    pageSize: 'A4',
+    orientation: 'landscape',
+    // Dokumen yang belum disetujui diberi watermark supaya salinan cetaknya tidak
+    // beredar sebagai angka final.
+    watermark: 'draft',
+    classification: 'confidential',
+  });
+  reports.saveBlocks(quarterly.id, [
+    { id: 'q1', type: 'heading', content: 'Ringkasan Eksekutif — Kuartal Berjalan' },
+    { id: 'q2', type: 'text', content: 'Disusun untuk rapat direksi. Berisi skor Balanced Scorecard, KPI di luar ambang batas, dan tindakan yang sedang berjalan.' },
+    { id: 'q3', type: 'chart', config: { kind: 'threshold_ring', kpiId: kpiCsat.id } },
+    { id: 'q4', type: 'signature' },
+  ]);
+
+  /* ---------------- Embed Dashboard (PRD 6.9) ---------------- */
+
+  // Dua token dengan cakupan berbeda: satu penuh untuk portal internal, satu dibatasi
+  // RLS untuk mitra yang hanya boleh melihat wilayahnya sendiri.
+  embed.issue({
+    dashboardId: dashboard.id,
+    label: 'Portal Intranet — layar lobi',
+    domainWhitelist: ['https://intranet.demo.id'],
+    mode: 'static',
+    expiresInDays: 90,
+    showAttribution: true,
+  });
+  embed.issue({
+    dashboardId: dashboard.id,
+    label: 'Mitra Wilayah Timur',
+    domainWhitelist: ['https://mitra-timur.demo.id'],
+    mode: 'interactive',
+    expiresInDays: 30,
+    rlsScope: [{ dimension: 'wilayah', operator: 'in', values: ['Wilayah Timur'] }],
+  });
+
+  /* ---------------- Alert Center: kejadian nyata (PRD 6.16) ---------------- */
+
+  // Aturan tanpa kejadian membuat Alert Center tampak belum pernah dipakai. Nilai di
+  // bawah sengaja melewati ambang batas supaya aturannya benar-benar memicu, termasuk
+  // mengisi antrean notifikasi yang statusnya `queued` — bukan `delivered`.
+  const csatBreach = await alerts.evaluate({
+    kpiId: kpiCsat.id,
+    value: 3.6,
+    label: 'CSAT bulan berjalan',
+    context: { wilayah: 'Wilayah Barat', periode: 'bulan berjalan' },
+  });
+  await alerts.evaluate({
+    kpiId: kpiResponse.id,
+    value: 14.2,
+    label: 'Waktu respons rata-rata',
+    context: { wilayah: 'Wilayah Utara', kanal: 'Telepon' },
+  });
+
+  // Satu kejadian ditindaklanjuti dan satu dibiarkan terbuka, supaya kedua keadaan
+  // terlihat di antrean.
+  if (csatBreach[0]) {
+    alerts.acknowledge(
+      csatBreach[0].eventId,
+      'Sudah ditinjau bersama supervisor wilayah; pelatihan agen kanal chat dijadwalkan pekan depan.',
+    );
+  }
+
+  /* ---------------- Analitik AI: pertanyaan yang pernah diajukan (PRD 6.6) ---------------- */
+
+  // Pertanyaan sengaja memuat NAMA KOLOM apa adanya (`skor_csat`, `waktu_respons_menit`).
+  // Pengurai maksud mencocokkan nama medan, bukan sinonim, jadi riwayat ini sekaligus
+  // memperlihatkan kepada pengguna bentuk pertanyaan yang memang dikenali — daripada
+  // meninggalkan contoh berbunyi bagus yang justru dijawab `error.metric_not_recognised`.
+  for (const question of [
+    'Berapa rata-rata skor_csat per wilayah?',
+    'Bagaimana rata-rata waktu_respons_menit di setiap kanal?',
+    'Berapa total jumlah_tiket per kanal?',
+    'Wilayah mana yang skor_csat-nya paling rendah?',
+    'What is the average skor_csat by wilayah?',
+  ]) {
+    await ai.ask(question, {
+      datasetId: tickets.dataset.id,
+      locale: question.startsWith('What') ? 'en' : 'id',
+    });
+  }
+
+  /* ---------------- Forecast Analytics (PRD 6.7) ---------------- */
+
+  const csatSeries = ctx.db
+    .all<{ value: number }>('kpi_score_history', { kpi_id: kpiCsat.id, dimension_key: null }, { orderBy: 'period' })
+    .map((r) => r.value);
+  if (csatSeries.length >= 6) {
+    forecast.run({ series: csatSeries, horizon: 6, method: 'arima', kpiId: kpiCsat.id });
+    forecast.run({ series: csatSeries, horizon: 3, method: 'linear_regression', kpiId: kpiCsat.id });
+  }
+
+  /* ---------------- Root Cause Analysis (PRD 6.8) ---------------- */
+
+  const ticketRowsAll = datasets.allRows(tickets.dataset.id);
+  const rcaDraft = rca.generate({
+    title: 'Penurunan CSAT di Wilayah Barat',
+    rows: ticketRowsAll,
+    metricField: 'skor_csat',
+    dimensionFields: ['wilayah', 'kanal'],
+    kpiId: kpiCsat.id,
+  });
+  // Draf yang divalidasi manusia memperlihatkan bahwa keluaran AI adalah usulan, bukan
+  // kesimpulan yang langsung berlaku (PRD 6.8).
+  rca.validate(rcaDraft.id, {
+    fiveWhy: rcaDraft.fiveWhy,
+    evidence: { catatan: 'Diverifikasi dengan rekaman panggilan kanal Telepon periode yang sama.' },
+  });
+  rca.generate({
+    title: 'Lonjakan waktu respons kanal Telepon',
+    rows: ticketRowsAll,
+    metricField: 'waktu_respons_menit',
+    dimensionFields: ['kanal', 'wilayah'],
+    kpiId: kpiResponse.id,
+  });
+
+  /* ---------------- AI Narrative Report (PRD 6.10) ---------------- */
+
+  const periods = ctx.db
+    .all<{ period: string }>('kpi_score_history', { kpi_id: kpiCsat.id, dimension_key: null }, { orderBy: 'period DESC' })
+    .map((r) => r.period);
+  if (periods.length >= 2) {
+    narrative.generate({ period: periods[0]!, comparePeriod: periods[1]!, locale: 'id' });
+    if (periods.length >= 4) {
+      narrative.generate({ period: periods[0]!, comparePeriod: periods[3]!, locale: 'en' });
+    }
+  }
+
+  /* ---------------- KPI Center: alur persetujuan (PRD 6.15) ---------------- */
+
+  // Perubahan definisi KPI menuntut empat mata: pengaju tidak boleh menyetujui usulannya
+  // sendiri. Karena itu persetujuan dijalankan sebagai pengguna LAIN.
+  const bagas = ctx.db.get<{ id: string }>('system_user', { email: 'bagas@demo.vantik.id' });
+  const approvedProposal = kpis.proposeChange(kpiResponse.id, { target: 9, name: 'Waktu Respons Pertama (menit)' });
+  if (bagas) {
+    const reviewerCtx = seedContext(db, audit, tenantId, bagas.id);
+    new KpiService(reviewerCtx).decideChange(
+      approvedProposal,
+      'approved',
+      'Target 9 menit sejalan dengan SLA baru yang berlaku kuartal ini.',
+    );
+  }
+  // Satu usulan dibiarkan menunggu, supaya kotak persetujuan tidak kosong.
+  kpis.proposeChange(kpiTickets.id, { weight: 1.5 });
+
+  /* ---------------- Billing & Faktur (PRD 6.28) ---------------- */
+
+  const startOfMonth = (offset: number): Date => {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - offset, 1));
+  };
+  const iso = (d: Date): string => d.toISOString().slice(0, 10);
+
+  // Dua faktur periode lalu: satu sudah dibayar, satu masih terbuka — supaya status
+  // pembayaran, penomoran berurutan, dan perhitungan pajak semuanya terlihat.
+  const paid = billing.issueInvoice({
+    lines: [{ description: 'Langganan Enterprise — tahunan (dicicil bulanan)', amount: 12_000_000 }],
+    periodStart: iso(startOfMonth(2)),
+    periodEnd: iso(new Date(startOfMonth(1).getTime() - 86_400_000)),
+    gatewayRef: 'demo-gw-0001',
+    paymentMethodLabel: 'Transfer Bank — BCA',
+  });
+  // Faktur ditandai lunas lewat jalur yang sama dengan payment gateway sungguhan —
+  // termasuk verifikasi tanda tangan HMAC — bukan dengan menulis status langsung ke tabel.
+  // Dengan begitu keadaan demo tidak pernah menjadi keadaan yang tidak mungkin dicapai
+  // aplikasi sendiri.
+  const webhookSecret = process.env.VANTIK_PAYMENT_WEBHOOK_SECRET ?? 'rahasia-webhook-demo';
+  const webhookBody = JSON.stringify({
+    event: 'payment.succeeded',
+    invoiceId: paid.id,
+    gatewayRef: 'demo-gw-0001',
+  });
+  billing.handleGatewayWebhook(
+    webhookBody,
+    createHmac('sha256', webhookSecret).update(webhookBody).digest('hex'),
+    webhookSecret,
+  );
+  billing.issueInvoice({
+    lines: [
+      { description: 'Langganan Enterprise — tahunan (dicicil bulanan)', amount: 12_000_000 },
+      { description: 'Tambahan penyimpanan 50 GB', amount: 750_000 },
+    ],
+    periodStart: iso(startOfMonth(1)),
+    periodEnd: iso(new Date(startOfMonth(0).getTime() - 86_400_000)),
+  });
+
+  /* ---------------- Usage Metering (PRD 6.29) ---------------- */
+
+  // Pemanggilan AI di atas sudah tercatat sendiri. Yang ditambahkan di sini adalah
+  // metrik yang tidak punya pemicu alami saat seeding.
+  metering.record('datasets', 3, 'seed:dataset_upload');
+  metering.record('users', 7, 'seed:user_provisioning');
+  metering.record('connections', 3, 'seed:connection_setup');
+  metering.record('embed_tokens', 2, 'seed:embed_issue');
+  for (let day = 29; day >= 0; day--) {
+    metering.record('storage_mb', Math.round(180 + pseudo(31, day) * 60), 'seed:harian');
+  }
+
+  const counts = db
+    .prepare(
+      `SELECT (SELECT COUNT(*) FROM dataset_rows) AS baris,
+              (SELECT COUNT(*) FROM kpi_score_history) AS skor,
+              (SELECT COUNT(*) FROM alert_events) AS alert,
+              (SELECT COUNT(*) FROM ai_queries) AS ai,
+              (SELECT COUNT(*) FROM invoices) AS faktur`,
+    )
+    .get() as { baris: number; skor: number; alert: number; ai: number; faktur: number };
+
+  console.log('[seed] done');
+  console.log('[seed] tenant slug : demo');
+  console.log('[seed] admin login : admin@demo.vantik.id / VantikDemo#2026');
+  console.log('[seed] other users : rizky|sari|bagas|maya|andi|putri @demo.vantik.id (same password)');
+  console.log(
+    `[seed] isi        : ${counts.baris} baris dataset · ${counts.skor} skor KPI · ` +
+      `${counts.alert} kejadian alert · ${counts.ai} pertanyaan AI · ${counts.faktur} faktur`,
+  );
+
+  // Peta akun → modul.
+  //
+  // Dicetak karena tidak ada satu peran non-MFA yang dapat melihat seluruh modul: itu
+  // konsekuensi langsung dari hak akses paling sempit (SECURITY.md Bagian 5). Tanpa peta
+  // ini, orang yang menjelajah demo akan menyimpulkan modulnya kosong padahal yang terjadi
+  // adalah penolakan wewenang yang memang disengaja.
+  console.log('');
+  console.log('[seed] Akun mana untuk melihat apa (semua kata sandi sama):');
+  console.log('[seed]   andi   → Dataset, Statistik, Regresi, AI Analytics, RCA, Narrative, Report, Data Modeling');
+  console.log('[seed]   rizky  → Digital Twin, Operational Cockpit — DIBATASI RLS ke Wilayah Timur saja');
+  console.log('[seed]   sari   → Executive Cockpit, Balanced Scorecard, Report');
+  console.log('[seed]   putri  → Log Aktivitas, Perangkat & Sesi, antrean notifikasi');
+  console.log('[seed]   maya   → Data Quality Center, sertifikasi dataset (wajib MFA)');
+  console.log('[seed]   bagas  → Koneksi Eksternal, Data Modeling (wajib MFA)');
+  console.log('[seed]   admin  → SELURUH modul, tetapi wajib mengaktifkan MFA lebih dulu');
+  console.log('[seed]');
+  console.log('[seed] Untuk melihat seluruh aplikasi dalam satu sesi: masuk sebagai admin,');
+  console.log('[seed] lalu aktifkan Verifikasi Dua Langkah di menu "Perangkat & Sesi".');
+  db.close();
 }
 
 const invokedDirectly = process.argv[1]?.includes('seed');
-if (invokedDirectly) seed();
+if (invokedDirectly) {
+  // Kegagalan harus terlihat DAN mengembalikan kode keluar bukan-nol: basis data yang
+  // separuh terisi lebih buruk daripada seeding yang jelas-jelas gagal.
+  seed().catch((error: unknown) => {
+    console.error('[seed] GAGAL:', error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}

@@ -51,7 +51,7 @@ import {
   RcaService,
 } from './ai-engine-service/index.ts';
 import { DashboardService, EmbedRenderer, EmbedService, ReportService } from './designer-service/index.ts';
-import { AlertService } from './alerting-service/index.ts';
+import { AlertService, QueueOnlyTransport, type NotificationTransport } from './alerting-service/index.ts';
 import { DigitalTwinService } from './iot-gateway-service/index.ts';
 import { BalancedScorecardService, CockpitService } from './presentation-service/index.ts';
 
@@ -77,6 +77,16 @@ export function createApp(options: AppOptions = {}): VantikApp {
   const keyring = options.keyring ?? KeyRing.fromEnv();
   const audit = new AuditService(db);
   const outbox = new NotificationOutbox(db);
+
+  /**
+   * Satu transport dipakai bersama seluruh permintaan.
+   *
+   * Sebelumnya setiap pemanggilan membangun stub-nya sendiri, sehingga memasang transport
+   * nyata berarti menyunting tiga tempat dan berisiko satu terlewat — satu jalur notifikasi
+   * yang masih memakai stub tidak akan memunculkan kesalahan apa pun, hanya pesan yang
+   * tidak pernah terkirim. Ganti baris ini saja untuk mengaktifkan pengiriman nyata.
+   */
+  const notificationTransport: NotificationTransport = new QueueOnlyTransport();
   const auth = new AuthService(db, audit, outbox);
   const tenants = new TenantService(db, audit);
   tenants.seedPlans();
@@ -676,7 +686,8 @@ export function createApp(options: AppOptions = {}): VantikApp {
 
   /* --- Alert Center (PRD 6.16) --- */
 
-  const alertsOf = (req: Request): AlertService => new AlertService(requireContext(req));
+  const alertsOf = (req: Request): AlertService =>
+    new AlertService(requireContext(req), notificationTransport, outbox);
 
   api.get('/alerts/rules', (req, res) => {
     res.json({ rules: alertsOf(req).listRules() });
@@ -870,7 +881,7 @@ export function createApp(options: AppOptions = {}): VantikApp {
   /* --- Digital Twin (PRD 6.17) --- */
 
   const twinOf = (req: Request): DigitalTwinService =>
-    new DigitalTwinService(requireContext(req), new AlertService(requireContext(req)));
+    new DigitalTwinService(requireContext(req), new AlertService(requireContext(req), notificationTransport, outbox));
 
   api.get('/twin/floor-plan', (req, res) => {
     res.json({ zones: twinOf(req).floorPlan() });
@@ -1183,7 +1194,7 @@ export function createApp(options: AppOptions = {}): VantikApp {
     const breaching = new KpiService(ctx).breaching(period);
     if (breaching.length === 0) return 0;
 
-    const alerts = new AlertService(ctx);
+    const alerts = new AlertService(ctx, notificationTransport, outbox);
     let triggered = 0;
     for (const { kpi, score } of breaching) {
       const events = await alerts.evaluate({

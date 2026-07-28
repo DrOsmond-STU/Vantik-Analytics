@@ -13,6 +13,7 @@ import { evaluateFormula, tokenizeFormula } from '../src/data-platform-service/m
 import { assessQuality, CERTIFICATION_THRESHOLD, countDuplicateRows } from '../src/data-platform-service/dataQuality.ts';
 import { detectColumnType, parseCsv, scanForMalware, validateFilename, MAX_UPLOAD_BYTES } from '../src/data-platform-service/csv.ts';
 import { AlertService, QueueOnlyTransport } from '../src/alerting-service/index.ts';
+import { NotificationOutbox } from '../src/platform/outbox.ts';
 import { DashboardService, EmbedRenderer, EmbedService } from '../src/designer-service/index.ts';
 import { VISUALIZATION_CATALOG } from '../src/designer-service/visualizations.ts';
 import { computeHealthScore, classifyReading, DigitalTwinService } from '../src/iot-gateway-service/index.ts';
@@ -358,6 +359,39 @@ describe('Alert Center — PRD 6.16', () => {
     const triggered = await service.evaluate({ kpiId: kpi.id, value: 5, label: 'x' });
     expect(triggered).toHaveLength(0);
     expect(transport.sent).toHaveLength(0);
+  });
+
+  it('TC-AL-04 — notifikasi yang tidak terkirim menunggu di outbox LENGKAP DENGAN ISINYA', async () => {
+    const tenant = provisionTenant(harness);
+    const ctx = contextFor(harness, tenant.tenantId, ['super_admin']);
+    const outbox = new NotificationOutbox(harness.db);
+    const service = new AlertService(ctx, new QueueOnlyTransport(), outbox);
+    const kpi = new KpiService(ctx).create({ code: 'A4', name: 'CSAT', formula: 'AVG(x)', target: 4.5 });
+
+    service.createRule({
+      name: 'CSAT di bawah ambang',
+      kpiId: kpi.id,
+      comparator: 'lte',
+      threshold: 4,
+      channels: ['email'],
+      recipients: ['ops@test.id'],
+    });
+    await service.evaluate({ kpiId: kpi.id, value: 3.6, label: 'CSAT bulan berjalan' });
+
+    // `alert_deliveries` mencatat PERCOBAAN pengiriman tetapi tidak menyimpan badan pesan.
+    // Panduan pemasangan menjanjikan operator dapat membaca pesan tertunda dan
+    // menyampaikannya lewat kanal terpercaya selama belum ada transport nyata — janji itu
+    // hanya benar bila isinya benar-benar ada di suatu tempat yang dapat dibaca.
+    const pending = outbox.pending(tenant.tenantId);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.purpose).toBe('alert_notification');
+    expect(pending[0]!.recipient).toBe('ops@test.id');
+    expect(pending[0]!.body).toContain('3.6');
+    expect(pending[0]!.body).toContain('4');
+
+    // Statusnya `queued`, bukan `sent`: tidak ada yang terkirim.
+    expect(outbox.counts(tenant.tenantId).queued).toBe(1);
+    expect(outbox.counts(tenant.tenantId).sent).toBe(0);
   });
 });
 

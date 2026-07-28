@@ -21,23 +21,27 @@ npm run dev      # API :4000 · web app :5173
 
 Akun demo (kata sandi sama untuk semuanya: `VantikDemo#2026`):
 
-| Email | Peran | MFA |
-|---|---|---|
-| `admin@demo.vantik.id` | Super Admin | **wajib** |
-| `rizky@demo.vantik.id` | Supervisor *(dibatasi RLS ke Wilayah Timur)* | — |
-| `sari@demo.vantik.id` | Manager | — |
-| `bagas@demo.vantik.id` | Data Engineer | **wajib** |
-| `maya@demo.vantik.id` | Data Steward | **wajib** |
-| `andi@demo.vantik.id` | Business Analyst + AI Analyst | — |
-| `putri@demo.vantik.id` | Auditor | — |
+| Email | Peran | Modul yang terlihat | MFA |
+|---|---|---|---|
+| `admin@demo.vantik.id` | Super Admin | **seluruh 30 modul** | **wajib** |
+| `andi@demo.vantik.id` | Business Analyst + AI Analyst | Dataset, Statistik, Regresi, AI Analytics, RCA, Narrative, Report, Data Modeling | — |
+| `rizky@demo.vantik.id` | Supervisor *(RLS: Wilayah Timur saja)* | Digital Twin, Operational Cockpit | — |
+| `sari@demo.vantik.id` | Manager | Executive Cockpit, Balanced Scorecard, Report | — |
+| `putri@demo.vantik.id` | Auditor | Log Aktivitas, Perangkat & Sesi, antrean notifikasi | — |
+| `maya@demo.vantik.id` | Data Steward | Data Quality Center, sertifikasi dataset | **wajib** |
+| `bagas@demo.vantik.id` | Data Engineer | Koneksi Eksternal, Data Modeling | **wajib** |
 
 Kode organisasi: `demo`.
 
-Tiga akun bertanda **wajib** dapat masuk tetapi belum berwenang apa pun sampai verifikasi
-dua langkah diaktifkan — buka **Perangkat & Sesi → Verifikasi Dua Langkah**. Itu perilaku
-yang disengaja (SECURITY.md Bagian 4), bukan kerusakan. Untuk menjelajah cepat tanpa
-menyiapkan autentikator, masuk sebagai `andi@demo.vantik.id` — peran Business Analyst +
-AI Analyst mencakup hampir seluruh modul analitik.
+**Tidak ada satu peran non-MFA yang dapat melihat seluruh modul** — itu konsekuensi langsung
+dari hak akses paling sempit, bukan kekurangan data. Modul di luar kewenangan peran dijawab
+`403`, dan antarmukanya menampilkan penolakan itu, bukan halaman kosong. Kolom *Modul yang
+terlihat* di atas juga dicetak ulang oleh `npm run seed` supaya tidak perlu dicari.
+
+Cara tercepat melihat seluruh aplikasi dalam satu sesi: masuk sebagai `admin`, lalu aktifkan
+**Perangkat & Sesi → Verifikasi Dua Langkah** (perlu satu aplikasi autentikator, sekitar dua
+menit). Tiga akun bertanda **wajib** dapat masuk tetapi belum berwenang apa pun sampai itu
+dilakukan — perilaku yang disengaja (SECURITY.md Bagian 4), bukan kerusakan.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
