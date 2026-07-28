@@ -31,18 +31,24 @@ Rinciannya ada di riwayat commit, bukan diringkas ulang di sini.
 
 ## Tidak diperbaiki, dengan alasan
 
-### `js/missing-rate-limiting` — 2 temuan
+### `js/missing-rate-limiting` — 3 temuan
 
-**`services/src/app.ts` (`POST /api/v1/auth/reauthenticate`)** — POSITIF PALSU.
+**`services/src/app.ts` (`POST /api/v1/auth/reauthenticate` dan `POST /api/v1/me/password`)** — POSITIF PALSU.
 
-Rute ini **sudah** dibatasi laju, dua kali: seluruh router `/api` memakai `apiLimiter`
-(600/menit), dan handler ini menambahkan `loginLimiter` (10/menit, berkunci pada userId)
-karena ia memeriksa kata sandi.
+Kedua rute ini **sudah** dibatasi laju, dua kali: seluruh router `/api` memakai
+`apiLimiter` (600/menit), dan masing-masing handler menambahkan `loginLimiter` (10/menit,
+berkunci pada userId) karena keduanya memeriksa kata sandi.
 
-CodeQL tidak dapat melihatnya: query `MissingRateLimiting.ql` mengenali paket batas laju
-yang sudah dimodelkan (`express-rate-limit`, `express-brute`, `rate-limiter-flexible`, dan
-beberapa lain), sedangkan kelas `RateLimiter` di `services/src/platform/http.ts` dibuat
-sendiri agar paket runtime tetap minimal — syarat praktis untuk shared hosting.
+CodeQL menandai **baris tempat limiter itu dipasang**. Query `MissingRateLimiting.ql`
+mengenali paket batas laju yang sudah dimodelkan (`express-rate-limit`, `express-brute`,
+`rate-limiter-flexible`, dan beberapa lain), sedangkan kelas `RateLimiter` di
+`services/src/platform/http.ts` dibuat sendiri agar paket runtime tetap minimal — syarat
+praktis untuk shared hosting.
+
+**Alasan ini dibuktikan uji, bukan sekadar dinyatakan.** `TC-PWD-15` menembak
+`POST /me/password` empat belas kali dan menuntut sebagian dijawab `429`; `TC-RL-*` di
+`security.test.ts` melakukan hal setara untuk jalur login. Bila limiter itu suatu saat
+terlepas, yang gagal adalah uji — bukan alasan di dokumen ini yang diam-diam menjadi salah.
 
 *Yang akan mengubah keputusan ini:* bila paket runtime tambahan menjadi dapat diterima,
 mengganti `RateLimiter` dengan `express-rate-limit` akan sekaligus menghapus temuan ini dan

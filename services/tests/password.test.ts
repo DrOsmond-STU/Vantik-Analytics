@@ -301,6 +301,30 @@ describe('Pengguna mengganti kata sandinya sendiri lewat HTTP', () => {
     expect(row).toBeTruthy();
   });
 
+  it('TC-PWD-15 — penggantian kata sandi BENAR-BENAR dibatasi laju', async () => {
+    // CodeQL menandai rute ini `js/missing-rate-limiting` — tepat pada baris tempat
+    // limiter dipasang. Query-nya hanya mengenali paket batas laju yang sudah dimodelkan
+    // (`express-rate-limit` dan sejenisnya), bukan `RateLimiter` buatan sendiri yang
+    // dipakai agar paket runtime tetap minimal untuk shared hosting.
+    //
+    // Temuan itu dibiarkan dan ditriase di docs/SAST-TRIAGE.md. Uji ini yang membuat
+    // keputusan tersebut jujur: alasan "sudah dibatasi laju" harus dapat dibuktikan,
+    // bukan sekadar dinyatakan di dokumen — dan bila suatu saat limiter itu terlepas,
+    // yang gagal adalah uji ini, bukan alasan yang diam-diam menjadi salah.
+    let ditolak = 0;
+    for (let i = 0; i < 14; i++) {
+      const response = await request(app)
+        .post('/api/v1/me/password')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ currentPassword: 'TebakanSalah#2026', newPassword: SANDI_BARU });
+      if (response.status === 429) ditolak++;
+    }
+
+    // Endpoint ini memeriksa kata sandi, jadi ia adalah orakel kata sandi persis seperti
+    // login: tanpa batas, ia menjadi jalur tebak-sandi yang melewati batas login.
+    expect(ditolak).toBeGreaterThan(0);
+  });
+
   it('TC-PWD-14 — sesi berjalan TETAP hidup setelah pengguna mengganti sandinya sendiri', async () => {
     await request(app)
       .post('/api/v1/me/password')
