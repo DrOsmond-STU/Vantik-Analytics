@@ -47,6 +47,7 @@ export const dictionary = {
   'action.mfa_disable': ['Matikan verifikasi dua langkah', 'Turn off two-step verification'],
   'action.mfa_new_recovery_codes': ['Terbitkan kode pemulihan baru', 'Issue new recovery codes'],
   'action.copy': ['Salin', 'Copy'],
+  'action.password_change': ['Ganti Kata Sandi', 'Change Password'],
   'action.view_detail': ['Lihat Detail', 'View Detail'],
 
   /* ---------------- Status ---------------- */
@@ -329,6 +330,14 @@ export const dictionary = {
   'error.password_needs_letter': ['Kata sandi harus memuat huruf.', 'Password must contain a letter.'],
   'error.password_needs_digit': ['Kata sandi harus memuat angka.', 'Password must contain a digit.'],
   'error.password_needs_symbol': ['Kata sandi harus memuat simbol.', 'Password must contain a symbol.'],
+  'error.password_confirm_mismatch': [
+    'Konfirmasi tidak sama dengan kata sandi baru.',
+    'Confirmation does not match the new password.',
+  ],
+  'error.use_self_password_change': [
+    'Untuk akun sendiri, gunakan Ganti Kata Sandi di halaman profil — kata sandi lama diperlukan.',
+    'For your own account, use Change Password on your profile page — your current password is required.',
+  ],
   'error.password_reused': [
     'Kata sandi tidak boleh sama dengan 5 kata sandi terakhir.',
     'Password cannot match any of your last 5 passwords.',
@@ -737,6 +746,15 @@ export const dictionary = {
   ],
   'ui.attribution': ['Ditenagai oleh Vantik Analytics', 'Powered by Vantik Analytics'],
   'ui.login_title': ['Masuk ke Vantik Analytics', 'Sign in to Vantik Analytics'],
+  'ui.password_title': ['Kata Sandi', 'Password'],
+  'ui.password_current': ['Kata sandi saat ini', 'Current password'],
+  'ui.password_new': ['Kata sandi baru', 'New password'],
+  'ui.password_confirm': ['Ulangi kata sandi baru', 'Repeat new password'],
+  'ui.password_policy': [
+    'Minimal 12 karakter, memuat huruf, angka, dan simbol. Kata sandi yang pernah dipakai ditolak.',
+    'At least 12 characters with a letter, a digit, and a symbol. Previously used passwords are rejected.',
+  ],
+  'ui.password_changed': ['Kata sandi berhasil diganti.', 'Password changed.'],
   'ui.mfa_step_title': ['Verifikasi dua langkah', 'Two-step verification'],
   'ui.mfa_step_hint': [
     'Masukkan kode dari aplikasi autentikator Anda, atau salah satu kode pemulihan.',

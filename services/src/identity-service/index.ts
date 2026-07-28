@@ -532,6 +532,51 @@ export class AuthorizationService {
     });
   }
 
+  /**
+   * Admin menetapkan ulang kata sandi pengguna lain (SECURITY.md Bagian 4).
+   *
+   * Tanpa jalur ini, pengguna yang lupa kata sandinya terkunci permanen: tidak ada
+   * pemulihan mandiri, dan admin pun tidak punya cara menolong selain menyunting basis
+   * data langsung. Kebijakan panjang & riwayat pemakaian ulang ditegakkan
+   * `AuthService.changePassword()` yang sama dengan jalur mandiri — reset oleh admin
+   * bukan pintu belakang untuk memasang kata sandi lemah.
+   */
+  resetPassword(userId: string, newPassword: string, auth: AuthService): void {
+    this.ctx.require('authorization:write', { module: 'Otorisasi User', objectId: userId });
+    this.ctx.requireWritable();
+
+    // Pencarian ini ber-scope tenant, dan sengaja dilakukan SEBELUM menyentuh
+    // AuthService yang mencari `system_user` lintas tenant. Tanpa urutan ini, admin
+    // satu tenant dapat menetapkan ulang kata sandi pengguna tenant lain hanya dengan
+    // menebak id-nya.
+    const user = this.ctx.db.get<{ email: string }>('system_user', { id: userId });
+    if (!user) throw new NotFoundError();
+
+    // Akun sendiri lewat jalur mandiri, yang menuntut kata sandi lama. Reset di sini
+    // mencabut seluruh sesi target — dipakai pada diri sendiri, admin akan mengeluarkan
+    // dirinya di tengah pekerjaan tanpa alasan yang jelas baginya.
+    if (userId === this.ctx.actor.userId) {
+      throw new ValidationError('error.use_self_password_change');
+    }
+
+    auth.changePassword(userId, newPassword);
+
+    // Reset justru dipakai ketika kata sandi lama diduga bocor. Sesi yang sudah berjalan
+    // harus ikut mati — kalau tidak, penyusup tetap masuk memakai sesi lamanya dan
+    // penggantian kata sandi hanya menyulitkan pemilik akun yang sah.
+    const revoked = auth.revokeSessionsForUser(this.ctx.tenant.id, userId, 'password_reset_by_admin');
+
+    this.ctx.log({
+      action: 'user.password_reset',
+      module: 'Otorisasi User',
+      objectType: 'user',
+      objectId: userId,
+      objectLabel: user.email,
+      severity: 'critical',
+      detail: { sessionsRevoked: revoked },
+    });
+  }
+
   /** Peninjauan hak akses berkala, minimum kuartalan (SECURITY.md Bagian 5). */
   accessReview(): {
     generatedAt: string;

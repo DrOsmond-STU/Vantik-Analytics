@@ -1011,6 +1011,74 @@ export function AuditLogView(): JSX.Element {
  * apa pun, dan `PageHead` di sekelilingnya tetap tampil meski panel lain gagal memuat.
  */
 /**
+ * Penggantian kata sandi mandiri.
+ *
+ * Sebelum panel ini ada, kata sandi tidak dapat diganti dari mana pun: `changePassword()`
+ * ada di AuthService tetapi tidak terjangkau rute mana pun. Akibatnya kata sandi yang
+ * ditetapkan saat akun dibuat berlaku selamanya — termasuk kata sandi demo yang tertulis
+ * di dokumentasi publik.
+ *
+ * Kata sandi lama diminta karena server memang mewajibkannya: sesi yang dicuri tidak
+ * boleh dapat merebut akun secara permanen.
+ */
+export function PasswordPanel(): JSX.Element {
+  const { t } = useApp();
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [errorKey, setErrorKey] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  const mismatch = confirm.length > 0 && next !== confirm;
+
+  async function submit(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    setBusy(true);
+    setErrorKey(null);
+    setDone(false);
+    try {
+      await api.post('/me/password', { currentPassword: current, newPassword: next });
+      setCurrent('');
+      setNext('');
+      setConfirm('');
+      setDone(true);
+    } catch (error) {
+      setErrorKey(error instanceof ApiError ? error.key : 'error.internal');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel title={t('ui.password_title')} span="half">
+      <form onSubmit={(event) => void submit(event)} style={{ display: 'grid', gap: 10 }}>
+        <div style={{ fontSize: 12.5, color: 'var(--text-600)' }}>{t('ui.password_policy')}</div>
+        <Field label={t('ui.password_current')}>
+          <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" required />
+        </Field>
+        <Field label={t('ui.password_new')}>
+          <input type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" required />
+        </Field>
+        <Field label={t('ui.password_confirm')}>
+          <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" required />
+        </Field>
+
+        {/* Ketidakcocokan ditangkap di sini supaya pengguna tidak menghabiskan jatah
+            batas laju hanya karena salah ketik pada kolom konfirmasi. */}
+        {mismatch && <div className="note warn">{t('error.password_confirm_mismatch')}</div>}
+        {errorKey && <div className="note warn">{t(errorKey)}</div>}
+        {done && <div className="note">{t('ui.password_changed')}</div>}
+
+        <button type="submit" className="btn primary" disabled={busy || mismatch || next.length === 0}>
+          {busy ? t('ui.loading') : t('action.password_change')}
+        </button>
+      </form>
+    </Panel>
+  );
+}
+
+/**
  * Diekspor agar dapat diuji sendiri.
  *
  * `DeviceView` yang memuatnya memanggil tiga endpoint lain saat dipasang, sehingga
@@ -1181,6 +1249,7 @@ export function DeviceView(): JSX.Element {
       <PageHead title="Perangkat & Sesi" subtitle={locale === 'id' ? 'Satu akun terikat perangkat terdaftar; satu sesi aktif per akun' : 'Accounts bound to registered devices; one active session per account'} />
       <div className="grid g-12">
         <MfaPanel />
+        <PasswordPanel />
         {/* Transparansi WAJIB — data perangkat termasuk data pribadi (SECURITY.md 17.3). */}
         <Panel title={t('ui.my_devices')} span="half">
           <ViewState state={mine}>

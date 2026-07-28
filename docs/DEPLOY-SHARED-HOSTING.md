@@ -206,7 +206,7 @@ Mengikuti DEPLOYMENT.md Bagian 10 (checklist pra-peluncuran R1) dan SECURITY.md:
 - [ ] Berkas `.db` **tidak** ada di dalam `public_html`
 - [ ] `NODE_ENV=production` aktif (cookie sesi ber-flag `Secure`)
 - [ ] Situs dipaksa HTTPS (`.htaccess` sudah mengaturnya; pastikan sertifikat aktif)
-- [ ] Kata sandi admin default sudah diganti; seed demo tidak dijalankan di production
+- [ ] Kata sandi admin default sudah diganti lewat **Perangkat & Sesi → Kata Sandi**; seed demo tidak dijalankan di production
 - [ ] `VANTIK_MASTER_KEY` tercatat di pengelola kata sandi organisasi
 - [ ] **Verifikasi dua langkah admin sudah diaktifkan** (lihat 8.1 — wajib sebelum admin dapat bekerja)
 - [ ] **Kode pemulihan admin sudah dicetak/disimpan di luar sistem**
@@ -251,6 +251,25 @@ Yang perlu diketahui operator:
 - Lima kali salah pada satu sesi verifikasi mematikan sesi itu (harus login ulang);
   sepuluh kegagalan berturut-turut mengunci akun sementara.
 - Peran yang mewajibkan MFA **tidak dapat** mematikannya sendiri.
+
+### 8.1b Kata sandi: siapa dapat mengganti apa
+
+- **Akun sendiri** — **Perangkat & Sesi → Kata Sandi**. Kata sandi lama wajib diisi; sesi
+  yang sah saja tidak cukup. Itu disengaja: sesi yang dicuri tidak boleh dapat merebut akun
+  secara permanen, ia hanya boleh memakai akses yang terlanjur dimilikinya.
+- **Akun orang lain** — Admin memakai `POST /api/v1/authorization/users/:id/password`
+  (izin `authorization:write`, dan re-autentikasi dalam 5 menit terakhir). Reset ini
+  **mencabut seluruh sesi target**, karena reset justru dipakai ketika kata sandi lama
+  diduga bocor.
+- Kebijakan yang sama berlaku pada kedua jalur: minimal 12 karakter dengan huruf, angka,
+  dan simbol, serta penolakan kata sandi yang pernah dipakai. Reset oleh admin bukan pintu
+  belakang untuk memasang kata sandi lemah.
+
+> **Belum ada pemulihan mandiri "lupa kata sandi".** Mengirim tautan reset menuntut
+> transport email yang nyata (lihat 8.3), yang belum terpasang. Sampai itu ada, pengguna
+> yang lupa kata sandinya harus menghubungi Admin. Untuk instalasi satu Admin, itu berarti
+> **sediakan dua akun Admin** — kalau tidak, Admin yang lupa kata sandinya sendiri hanya
+> dapat ditolong lewat penyuntingan basis data langsung.
 
 ### 8.2 Penjadwal: pasang cron bila hosting mendukungnya
 

@@ -398,6 +398,48 @@ export function createApp(options: AppOptions = {}): VantikApp {
     res.json({ ok: true, ...updates });
   });
 
+  /**
+   * Pengguna mengganti kata sandinya sendiri.
+   *
+   * Kata sandi lama WAJIB disertakan — sesi yang sah saja tidak cukup. Sesi yang dicuri
+   * tidak boleh dapat mengganti kata sandi dan mengunci pemilik akun dari akunnya
+   * sendiri; menuntut kata sandi lama membuat pencuri sesi hanya dapat memakai akses
+   * yang sudah ia punya, bukan merebutnya permanen.
+   *
+   * Dibatasi laju karena ia memeriksa kata sandi, sama seperti login dan reauth.
+   */
+  api.post(
+    '/me/password',
+    loginLimiter.middleware((req) => `password:${req.ctx?.actor.userId ?? clientIp(req) ?? 'unknown'}`),
+    (req, res) => {
+      const ctx = requireContext(req);
+      const body = req.body as { currentPassword?: string; newPassword?: string };
+      const current = String(body.currentPassword ?? '');
+      const next = String(body.newPassword ?? '');
+      if (!current || !next) throw new ValidationError('error.password_required');
+
+      if (!auth.reauthenticate(ctx.actor.sessionId, ctx.actor.userId, current)) {
+        res.status(401).json({ error: { key: 'error.invalid_credentials', detail: null } });
+        return;
+      }
+
+      // Kebijakan panjang dan penolakan pemakaian ulang ditegakkan di sini, bukan di
+      // rute — jalur admin memakai fungsi yang sama.
+      auth.changePassword(ctx.actor.userId, next);
+
+      // Sesi berjalan TIDAK dicabut: pengguna baru saja membuktikan kepemilikan akun
+      // dengan kata sandi lamanya, jadi mengeluarkannya hanya menghukum orang yang benar.
+      ctx.log({
+        action: 'user.password_changed',
+        module: 'Perangkat & Sesi',
+        objectType: 'user',
+        objectId: ctx.actor.userId,
+        severity: 'notice',
+      });
+      res.json({ ok: true });
+    },
+  );
+
   /* --- MFA: pendaftaran & pengelolaan (SECURITY.md Bagian 4) --- */
   //
   // Rute-rute ini SENGAJA tidak memanggil `ctx.require(...)`: seluruhnya hanya menyentuh
@@ -985,6 +1027,14 @@ export function createApp(options: AppOptions = {}): VantikApp {
   });
   api.post('/authorization/users/:id/disable', (req, res) => {
     new AuthorizationService(requireContext(req)).disableUser(req.params.id!, auth);
+    res.json({ ok: true });
+  });
+  api.post('/authorization/users/:id/password', (req, res) => {
+    const next = String((req.body as { newPassword?: string }).newPassword ?? '');
+    if (!next) throw new ValidationError('error.password_required');
+    // `authorization:write` termasuk SENSITIVE_PERMISSIONS, jadi re-autentikasi dalam
+    // 5 menit terakhir sudah dituntut otomatis oleh `ctx.require()`.
+    new AuthorizationService(requireContext(req)).resetPassword(req.params.id!, next, auth);
     res.json({ ok: true });
   });
   api.get('/authorization/access-review', (req, res) => {
