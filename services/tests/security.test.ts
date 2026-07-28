@@ -322,7 +322,20 @@ describe('Log Aktivitas immutable (SECURITY.md Bagian 9)', () => {
  * mencegah seseorang mengembalikan `Math.random()` tanpa ada yang menyadarinya.
  */
 describe('Keacakan pada nilai sensitif', () => {
-  it('TC-RNG-01 — OTP pemindahan perangkat selalu 6 digit dan tidak berulang', () => {
+  /**
+   * Kedua uji berikut sengaja mengundi ratusan kali, dan setiap undian menulis satu
+   * permintaan pemindahan ke basis data. Di mesin pengembangan keduanya selesai dalam
+   * ~1,5 s dan ~2 s, tetapi di runner CI dua inti seluruh berkas uji berbagi CPU
+   * (`tests 71s` untuk 26 s wall), sehingga batas bawaan 5 s sempat terlampaui.
+   *
+   * Batasnya dinaikkan, BUKAN jumlah undiannya dikurangi: 200 undian dengan ambang 195
+   * unik adalah kekuatan statistik uji ini. Menurunkannya menjadi beberapa puluh undian
+   * akan membuat generator yang bias halus lolos — menukar daya deteksi dengan waktu
+   * eksekusi. Uji lain tetap memakai batas 5 s agar hang sungguhan tetap tertangkap.
+   */
+  const BATAS_UNDIAN_BANYAK = 30_000;
+
+  it('TC-RNG-01 — OTP pemindahan perangkat selalu 6 digit dan tidak berulang', { timeout: BATAS_UNDIAN_BANYAK }, () => {
     const tenant = provisionTenant(harness);
     const userId = createUser(harness, tenant.tenantId, 'pindah@rng.test', 'business_analyst');
 
@@ -344,7 +357,7 @@ describe('Keacakan pada nilai sensitif', () => {
     expect(otps.size).toBeGreaterThan(195);
   });
 
-  it('TC-RNG-02 — OTP tidak pernah keluar dari rentang 6 digit (tanpa bias pembulatan)', () => {
+  it('TC-RNG-02 — OTP tidak pernah keluar dari rentang 6 digit (tanpa bias pembulatan)', { timeout: BATAS_UNDIAN_BANYAK }, () => {
     const tenant = provisionTenant(harness);
     const userId = createUser(harness, tenant.tenantId, 'rentang@rng.test', 'business_analyst');
 
