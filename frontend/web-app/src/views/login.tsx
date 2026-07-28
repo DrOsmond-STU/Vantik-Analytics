@@ -10,6 +10,7 @@ import { useApp } from '../app/AppContext.tsx';
 import { api, ApiError } from '../lib/api.ts';
 import { collectFingerprint } from '../lib/fingerprint.ts';
 import { Card, Field } from '../components/primitives.tsx';
+import { goTo } from './public.tsx';
 
 export function LoginView(): JSX.Element {
   const { t, locale, theme, setLocale, setTheme, refreshSession } = useApp();
@@ -162,6 +163,17 @@ export function LoginView(): JSX.Element {
             <button type="submit" className="btn primary" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
               {busy ? t('ui.loading') : t('action.login')}
             </button>
+
+            {/* Jalan keluar bagi orang yang tidak dapat masuk. Tanpa ini, layar masuk
+                adalah jalan buntu: satu-satunya pilihan adalah menebak lagi. */}
+            <div className="login-links">
+              <button type="button" className="linkbtn" onClick={() => goTo('forgot')}>
+                {t('action.forgot_password')}
+              </button>
+              <button type="button" className="linkbtn" onClick={() => goTo('landing')}>
+                {t('action.back_to_home')}
+              </button>
+            </div>
           </form>
         )}
 

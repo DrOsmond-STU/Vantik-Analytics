@@ -1064,6 +1064,34 @@ const REMAINING_MAIN_MIGRATIONS: readonly Migration[] = [
       ALTER TABLE stat_analyses ADD COLUMN rls_scope_json TEXT;
     `,
   },
+
+  {
+    id: '0012_password_reset',
+    sql: `
+      -- Permintaan pemulihan kata sandi.
+      --
+      -- Yang disimpan HANYA hash tokennya, sama seperti token sesi dan tantangan MFA:
+      -- basis data yang bocor tidak boleh menjadi kunci untuk mengambil alih setiap akun
+      -- di dalamnya. Tokennya sendiri hanya pernah ada di pesan yang dikirim ke pengguna.
+      --
+      -- Kolom email disimpan apa adanya karena permintaan dapat dibuat untuk alamat yang
+      -- TIDAK terdaftar — jawabannya tetap sama agar tidak ada yang dapat memakai formulir
+      -- ini untuk memetakan alamat mana yang punya akun (SECURITY.md Bagian 4).
+      CREATE TABLE password_reset_requests (
+        id           TEXT PRIMARY KEY,
+        tenant_id    TEXT REFERENCES tenants(id),
+        user_id      TEXT REFERENCES system_user(id),
+        email        TEXT NOT NULL,
+        token_hash   TEXT NOT NULL,
+        requested_at TEXT NOT NULL,
+        expires_at   TEXT NOT NULL,
+        consumed_at  TEXT,
+        requested_ip TEXT
+      );
+      CREATE INDEX idx_reset_token ON password_reset_requests(token_hash);
+      CREATE INDEX idx_reset_expiry ON password_reset_requests(expires_at);
+    `,
+  },
 ];
 
 /**

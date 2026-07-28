@@ -265,11 +265,32 @@ Yang perlu diketahui operator:
   dan simbol, serta penolakan kata sandi yang pernah dipakai. Reset oleh admin bukan pintu
   belakang untuk memasang kata sandi lemah.
 
-> **Belum ada pemulihan mandiri "lupa kata sandi".** Mengirim tautan reset menuntut
-> transport email yang nyata (lihat 8.3), yang belum terpasang. Sampai itu ada, pengguna
-> yang lupa kata sandinya harus menghubungi Admin. Untuk instalasi satu Admin, itu berarti
-> **sediakan dua akun Admin** — kalau tidak, Admin yang lupa kata sandinya sendiri hanya
-> dapat ditolong lewat penyuntingan basis data langsung.
+- **Lupa kata sandi** — tautan **Lupa kata sandi?** di halaman masuk. Pengguna memasukkan
+  alamat emailnya; bila akunnya ada, kode pemulihan berumur 30 menit dibuat dan masuk
+  antrean notifikasi. Jawaban layar SAMA untuk alamat terdaftar dan tidak terdaftar —
+  formulir yang membedakan keduanya adalah alat pemetaan gratis bagi penebak.
+
+> **Selama belum ada transport email (lihat 8.3), kode pemulihan menunggu di antrean.**
+> Admin membacanya dari `GET /api/v1/notifications/outbox` dan menyampaikannya lewat kanal
+> terpercaya. Begitu transport nyata dipasang, jalur yang sama berjalan otomatis tanpa
+> perubahan kode. Sampai saat itu, **sediakan dua akun Admin** — kalau tidak, Admin yang
+> lupa kata sandinya sendiri tidak punya siapa pun yang dapat membacakan kodenya.
+
+### 8.1c Pendaftaran mandiri: buka atau tutup
+
+Halaman depan menawarkan paket berlangganan, dan pengunjung dapat membuat ruang kerja
+sendiri berstatus uji coba. Setiap pendaftaran yang berhasil **membuat tenant**, jadi
+jalurnya dibatasi 3 per jam per alamat IP — di shared hosting dengan satu berkas SQLite
+dan kuota disk, batas itu bukan formalitas.
+
+Untuk pemasangan internal yang penggunanya dibuat administrator, matikan:
+
+```
+VANTIK_SELF_SIGNUP=off
+```
+
+Halaman depan ikut menyembunyikan ajakan mendaftar bila dimatikan, sehingga tidak ada
+tombol yang mengarah ke penolakan.
 
 ### 8.2 Penjadwal: pasang cron bila hosting mendukungnya
 

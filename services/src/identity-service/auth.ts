@@ -1,7 +1,7 @@
 /**
  * Autentikasi & manajemen sesi — SECURITY.md Bagian 4 & 17, PRD 6.30.
  */
-import { randomInt } from 'node:crypto';
+import { randomBytes, randomInt } from 'node:crypto';
 import type { NotificationOutbox } from '../platform/outbox.ts';
 import type { AuditService } from '../audit-service/index.ts';
 import { newId, nowIso, type Db } from '../platform/db.ts';
@@ -37,6 +37,15 @@ export const SESSION_LIFETIME_MS = 12 * 60 * 60 * 1000;
 export const MAX_FAILED_ATTEMPTS = 5;
 export const LOCKOUT_MS = 15 * 60 * 1000;
 const PASSWORD_HISTORY_SIZE = 5;
+
+/**
+ * Umur token pemulihan kata sandi.
+ *
+ * Pendek karena token itu setara kata sandi selama masih hidup. Tiga puluh menit cukup
+ * untuk membaca pesan dan mengetik sandi baru, tetapi terlalu singkat untuk berguna bila
+ * pesannya kelak ditemukan di kotak masuk yang sudah tidak dijaga.
+ */
+const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
 
 export interface LoginInput {
   email: string;
@@ -1350,6 +1359,165 @@ export class AuthService {
     if (sha256(otp) !== row.otp_hash) return false;
     this.db.prepare('UPDATE device_transfer_requests SET otp_verified = 1 WHERE id = ?').run(requestId);
     return true;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Pemulihan kata sandi (SECURITY.md Bagian 4)                       */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Mengajukan pemulihan kata sandi.
+   *
+   * SELALU mengembalikan bentuk jawaban yang sama, ada atau tidak ada akun dengan alamat
+   * itu. Formulir yang menjawab berbeda untuk alamat terdaftar dan tidak terdaftar adalah
+   * alat pemetaan gratis: siapa pun dapat menguji daftar alamat dan tahu mana yang punya
+   * akun di organisasi ini. Jadi keberadaan akun tidak pernah bocor lewat nilai kembalian —
+   * yang membedakan hanya ada-tidaknya pesan di antrean, dan antrean itu hanya dapat dibaca
+   * pemegang izin.
+   *
+   * Tokennya disimpan sebagai hash, sama seperti token sesi dan kode pemulihan MFA: basis
+   * data yang bocor tidak boleh menjadi kunci untuk merebut setiap akun di dalamnya.
+   */
+  requestPasswordReset(input: { email: string; tenantSlug?: string; ip?: string | null }): {
+    accepted: true;
+    /** Hanya untuk pengujian & operator; TIDAK pernah dikembalikan lewat HTTP. */
+    tokenForDelivery?: string;
+  } {
+    const email = input.email.trim().toLowerCase();
+    const at = nowIso();
+
+    const tenant = input.tenantSlug
+      ? (this.db.prepare('SELECT id FROM tenants WHERE slug = ?').get(input.tenantSlug) as
+          | { id: string }
+          | undefined)
+      : undefined;
+
+    const user = this.db
+      .prepare(
+        `SELECT u.id, u.tenant_id, u.status FROM system_user u
+          WHERE lower(u.email) = ?${input.tenantSlug ? ' AND u.tenant_id = ?' : ''}
+          LIMIT 1`,
+      )
+      .get(...(input.tenantSlug ? [email, tenant?.id ?? ''] : [email])) as
+      | { id: string; tenant_id: string; status: string }
+      | undefined;
+
+    // Akun nonaktif sengaja diperlakukan seperti akun yang tidak ada: memulihkan kata
+    // sandinya tidak akan memberi akses apa pun, dan membedakan jawabannya hanya
+    // memberitahu penebak bahwa alamat itu pernah terdaftar.
+    if (!user || user.status !== 'active') {
+      this.audit.record({
+        tenantId: tenant?.id ?? user?.tenant_id ?? 'unknown',
+        actorUserId: 'anonymous',
+        actorLabel: email,
+        actorIp: input.ip ?? null,
+        action: 'auth.password_reset_requested',
+        module: 'Perangkat & Sesi',
+        objectType: 'email',
+        objectId: email,
+        outcome: 'denied',
+        detail: { reason: 'no_active_account' },
+      });
+      return { accepted: true };
+    }
+
+    // Permintaan lama untuk akun yang sama dimatikan. Tanpa ini, setiap permintaan baru
+    // menambah satu token hidup, dan cukup satu yang bocor untuk merebut akun.
+    this.db
+      .prepare("UPDATE password_reset_requests SET consumed_at = ? WHERE user_id = ? AND consumed_at IS NULL")
+      .run(at, user.id);
+
+    const token = randomBytes(32).toString('base64url');
+    this.db
+      .prepare(
+        `INSERT INTO password_reset_requests
+           (id, tenant_id, user_id, email, token_hash, requested_at, expires_at, consumed_at, requested_ip)
+         VALUES (?,?,?,?,?,?,?,NULL,?)`,
+      )
+      .run(
+        newId('prq'),
+        user.tenant_id,
+        user.id,
+        email,
+        sha256(token),
+        at,
+        new Date(Date.now() + PASSWORD_RESET_TTL_MS).toISOString(),
+        input.ip ?? null,
+      );
+
+    this.outbox?.enqueue({
+      tenantId: user.tenant_id,
+      purpose: 'password_reset',
+      channel: 'email',
+      recipient: email,
+      subject: '[Vantik] Pemulihan kata sandi',
+      body:
+        `Kode pemulihan kata sandi Anda: ${token}\n\n` +
+        `Berlaku ${PASSWORD_RESET_TTL_MS / 60_000} menit dan hanya dapat dipakai sekali. ` +
+        `Bila Anda tidak meminta ini, abaikan pesan ini — kata sandi Anda tidak berubah.`,
+      sensitive: true,
+    });
+
+    this.audit.record({
+      tenantId: user.tenant_id,
+      actorUserId: 'anonymous',
+      actorLabel: email,
+      actorIp: input.ip ?? null,
+      action: 'auth.password_reset_requested',
+      module: 'Perangkat & Sesi',
+      objectType: 'user',
+      objectId: user.id,
+      severity: 'notice',
+    });
+
+    return { accepted: true, tokenForDelivery: token };
+  }
+
+  /**
+   * Menyelesaikan pemulihan dengan token.
+   *
+   * Sesi yang sedang berjalan DICABUT: pemulihan dipakai justru ketika pemilik akun
+   * kehilangan kendali, jadi membiarkan sesi lama hidup akan menyisakan pintu bagi
+   * siapa pun yang sudah masuk lebih dulu.
+   */
+  completePasswordReset(token: string, newPassword: string): { ok: boolean; reasonKey?: string } {
+    const row = this.db
+      .prepare(
+        `SELECT id, tenant_id, user_id, expires_at, consumed_at
+           FROM password_reset_requests WHERE token_hash = ?`,
+      )
+      .get(sha256(token)) as
+      | { id: string; tenant_id: string; user_id: string; expires_at: string; consumed_at: string | null }
+      | undefined;
+
+    if (!row || row.consumed_at || Date.parse(row.expires_at) < Date.now()) {
+      return { ok: false, reasonKey: 'error.reset_token_invalid' };
+    }
+
+    // Kebijakan panjang & penolakan pemakaian ulang ditegakkan `changePassword()` yang
+    // sama dengan kedua jalur lain; pemulihan bukan pintu belakang untuk sandi lemah.
+    // Bila ia melempar, token TIDAK ditandai terpakai supaya pengguna dapat mencoba lagi
+    // dengan kata sandi yang memenuhi syarat.
+    this.changePassword(row.user_id, newPassword);
+
+    const at = nowIso();
+    this.db.prepare('UPDATE password_reset_requests SET consumed_at = ? WHERE id = ?').run(at, row.id);
+    const revoked = this.revokeSessionsForUser(row.tenant_id, row.user_id, 'password_reset');
+
+    this.audit.record({
+      tenantId: row.tenant_id,
+      actorUserId: row.user_id,
+      actorLabel: 'pemulihan kata sandi',
+      actorIp: null,
+      action: 'auth.password_reset_completed',
+      module: 'Perangkat & Sesi',
+      objectType: 'user',
+      objectId: row.user_id,
+      severity: 'critical',
+      detail: { sessionsRevoked: revoked },
+    });
+
+    return { ok: true };
   }
 }
 

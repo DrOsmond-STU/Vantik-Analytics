@@ -48,6 +48,13 @@ export const dictionary = {
   'action.mfa_new_recovery_codes': ['Terbitkan kode pemulihan baru', 'Issue new recovery codes'],
   'action.copy': ['Salin', 'Copy'],
   'action.password_change': ['Ganti Kata Sandi', 'Change Password'],
+  'action.start_trial': ['Coba Gratis 14 Hari', 'Start 14-Day Free Trial'],
+  'action.subscribe': ['Berlangganan', 'Subscribe'],
+  'action.forgot_password': ['Lupa kata sandi?', 'Forgot your password?'],
+  'action.back_to_home': ['Kembali ke halaman depan', 'Back to home'],
+  'action.send_reset': ['Kirim Kode Pemulihan', 'Send Recovery Code'],
+  'action.have_reset_code': ['Saya sudah punya kodenya', 'I already have the code'],
+  'action.reset_password': ['Atur Ulang Kata Sandi', 'Reset Password'],
   'action.view_detail': ['Lihat Detail', 'View Detail'],
 
   /* ---------------- Status ---------------- */
@@ -330,6 +337,28 @@ export const dictionary = {
   'error.password_needs_letter': ['Kata sandi harus memuat huruf.', 'Password must contain a letter.'],
   'error.password_needs_digit': ['Kata sandi harus memuat angka.', 'Password must contain a digit.'],
   'error.password_needs_symbol': ['Kata sandi harus memuat simbol.', 'Password must contain a symbol.'],
+  'error.signup_disabled': [
+    'Pendaftaran mandiri sedang ditutup pada instalasi ini. Hubungi administrator untuk dibuatkan akun.',
+    'Self-service signup is closed on this installation. Contact your administrator for an account.',
+  ],
+  'error.signup_incomplete': [
+    'Lengkapi seluruh kolom sebelum melanjutkan.',
+    'Fill in every field before continuing.',
+  ],
+  'error.reset_token_invalid': [
+    'Kode pemulihan tidak berlaku, sudah dipakai, atau kedaluwarsa. Ajukan permintaan baru.',
+    'The recovery code is invalid, already used, or expired. Request a new one.',
+  ],
+  'error.email_required': ['Alamat email harus diisi.', 'Email address is required.'],
+  'error.tenant_slug_taken': [
+    'Alamat ruang kerja itu sudah dipakai organisasi lain. Pilih yang lain.',
+    'That workspace address is already taken. Choose another.',
+  ],
+  'error.invalid_tenant_slug': [
+    'Alamat ruang kerja hanya boleh huruf kecil, angka, dan tanda hubung.',
+    'Workspace address may contain only lowercase letters, digits, and hyphens.',
+  ],
+  'error.plan_unknown': ['Paket yang dipilih tidak dikenali.', 'The selected plan is not recognised.'],
   'error.password_confirm_mismatch': [
     'Konfirmasi tidak sama dengan kata sandi baru.',
     'Confirmation does not match the new password.',
@@ -746,6 +775,107 @@ export const dictionary = {
   ],
   'ui.attribution': ['Ditenagai oleh Vantik Analytics', 'Powered by Vantik Analytics'],
   'ui.login_title': ['Masuk ke Vantik Analytics', 'Sign in to Vantik Analytics'],
+  /* ---------------- Halaman depan & berlangganan ---------------- */
+  'ui.landing_eyebrow': ['Platform Analitik Perusahaan', 'Enterprise Analytics Platform'],
+  'ui.landing_headline': [
+    'Keputusan yang dapat ditelusuri sampai ke angkanya.',
+    'Decisions you can trace all the way back to the numbers.',
+  ],
+  'ui.landing_sub': [
+    'Satu tempat untuk data, KPI, analisis statistik, dan pelaporan — dengan jejak audit yang tidak dapat diubah siapa pun, termasuk administrator.',
+    'One place for data, KPIs, statistical analysis, and reporting — with an audit trail nobody can alter, administrators included.',
+  ],
+  'ui.landing_trial_note': [
+    'Uji coba 14 hari. Tanpa kartu kredit, dan datanya tetap milik Anda.',
+    'A 14-day trial. No credit card, and the data stays yours.',
+  ],
+  'ui.landing_modules_title': ['Yang Anda dapatkan', 'What you get'],
+  'ui.landing_modules_sub': [
+    '{modules} modul dalam {domains} domain, siap dipakai sejak hari pertama.',
+    '{modules} modules across {domains} domains, usable from day one.',
+  ],
+  'ui.landing_why_title': ['Yang membedakannya', 'What makes it different'],
+  'ui.landing_why_1_title': ['Angka yang dapat dipertanggungjawabkan', 'Numbers that hold up'],
+  'ui.landing_why_1_body': [
+    'Setiap laporan menyatakan sumber data, periode, dan berapa baris yang benar-benar terpakai. Uji statistik menyertakan pemeriksaan asumsinya, bukan hanya nilai-p.',
+    'Every report states its data source, period, and how many rows were actually used. Statistical tests report their assumption checks, not just a p-value.',
+  ],
+  'ui.landing_why_2_title': ['Batas akses yang ditegakkan mesin', 'Access limits the machine enforces'],
+  'ui.landing_why_2_body': [
+    'Pembatasan baris per pengguna berlaku di level kueri, bukan disembunyikan di antarmuka. Mengubah parameter di peramban tidak memberi data yang bukan haknya.',
+    'Row-level limits apply at the query layer, not hidden in the interface. Changing a parameter in the browser does not surface data the user has no right to.',
+  ],
+  'ui.landing_why_3_title': ['Jejak audit yang tidak dapat dihapus', 'An audit trail that cannot be erased'],
+  'ui.landing_why_3_body': [
+    'Log Aktivitas tersimpan di basis data terpisah yang menolak setiap perubahan dan penghapusan — termasuk dari Super Admin.',
+    'The activity log lives in a separate database that rejects every update and delete — including from a Super Admin.',
+  ],
+  'ui.landing_why_4_title': ['Dapat dipasang di mana pun', 'Runs where you need it'],
+  'ui.landing_why_4_body': [
+    'Berjalan di shared hosting cPanel tanpa Docker maupun akses root, dan di server sendiri bila datanya tidak boleh keluar organisasi.',
+    'Runs on cPanel shared hosting with no Docker and no root access, and on your own server when the data must not leave the organisation.',
+  ],
+  'ui.landing_plans_title': ['Paket berlangganan', 'Subscription plans'],
+  'ui.landing_plans_sub': [
+    'Naik atau turun paket kapan saja; selisihnya dihitung pro-rata.',
+    'Move up or down any time; the difference is prorated.',
+  ],
+  'ui.per_month': ['/bulan', '/month'],
+  'ui.plan_annual': ['{price} bila dibayar tahunan', '{price} billed annually'],
+  'ui.plan_modules': ['{count} modul aktif', '{count} active modules'],
+  'ui.plan_users': ['Pengguna: {value}', 'Users: {value}'],
+  'ui.plan_datasets': ['Dataset: {value}', 'Datasets: {value}'],
+  'ui.plan_ai': ['Panggilan AI per bulan: {value}', 'AI calls per month: {value}'],
+  'ui.signup_title': ['Buat ruang kerja', 'Create your workspace'],
+  'ui.signup_sub': [
+    'Ruang kerja langsung aktif dalam mode uji coba. Anda menjadi administrator pertamanya.',
+    'Your workspace starts immediately in trial mode. You become its first administrator.',
+  ],
+  'ui.signup_plan': ['Paket', 'Plan'],
+  'ui.signup_cycle': ['Siklus penagihan', 'Billing cycle'],
+  'ui.cycle_monthly': ['Bulanan', 'Monthly'],
+  'ui.cycle_annual': ['Tahunan', 'Annual'],
+  'ui.signup_org': ['Nama organisasi', 'Organisation name'],
+  'ui.signup_slug': ['Alamat ruang kerja', 'Workspace address'],
+  'ui.signup_slug_hint': [
+    'Dipakai saat masuk. Huruf kecil, angka, dan tanda hubung.',
+    'Used when signing in. Lowercase letters, digits, and hyphens.',
+  ],
+  'ui.signup_name': ['Nama Anda', 'Your name'],
+  'ui.signup_done_title': ['Ruang kerja siap', 'Your workspace is ready'],
+  'ui.signup_done_body': [
+    'Masuk memakai kode organisasi "{slug}" beserta email dan kata sandi yang baru saja Anda buat.',
+    'Sign in with organisation code "{slug}" and the email and password you just created.',
+  ],
+  'ui.forgot_title': ['Lupa kata sandi', 'Forgot password'],
+  'ui.forgot_sub': [
+    'Masukkan alamat email akun Anda. Bila akunnya ada, kode pemulihan akan dikirimkan.',
+    'Enter your account email. If the account exists, a recovery code will be sent.',
+  ],
+  'ui.forgot_tenant_hint': [
+    'Kosongkan bila Anda tidak ingat kode organisasinya.',
+    'Leave blank if you do not remember your organisation code.',
+  ],
+  'ui.forgot_sent_title': ['Permintaan diterima', 'Request received'],
+  'ui.forgot_sent_body': [
+    'Bila ada akun dengan alamat itu, kode pemulihan sudah dibuat. Kode berlaku 30 menit dan hanya dapat dipakai sekali.',
+    'If an account exists for that address, a recovery code has been created. It is valid for 30 minutes and can be used once.',
+  ],
+  'ui.forgot_no_transport': [
+    'Instalasi ini belum memasang pengiriman email, jadi kodenya menunggu di antrean notifikasi. Hubungi administrator untuk mengambilnya.',
+    'This installation has no email delivery configured yet, so the code is waiting in the notification queue. Ask your administrator for it.',
+  ],
+  'ui.reset_title': ['Atur ulang kata sandi', 'Reset your password'],
+  'ui.reset_token': ['Kode pemulihan', 'Recovery code'],
+  'ui.reset_token_hint': [
+    'Dari pesan pemulihan, atau dari administrator Anda.',
+    'From the recovery message, or from your administrator.',
+  ],
+  'ui.reset_done': [
+    'Kata sandi berhasil diatur ulang. Seluruh sesi lama sudah dikeluarkan.',
+    'Your password has been reset. All previous sessions were signed out.',
+  ],
+
   'ui.password_title': ['Kata Sandi', 'Password'],
   'ui.password_current': ['Kata sandi saat ini', 'Current password'],
   'ui.password_new': ['Kata sandi baru', 'New password'],

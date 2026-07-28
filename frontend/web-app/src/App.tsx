@@ -5,6 +5,13 @@ import { NAV_ICONS } from './app/navigationIcons.tsx';
 import { VIEWS } from './views/index.ts';
 import { ModuleLocked } from './views/shared.tsx';
 import { LoginView } from './views/login.tsx';
+import {
+  ForgotPasswordView,
+  LandingView,
+  ResetPasswordView,
+  SignupView,
+  publicRouteFromHash,
+} from './views/public.tsx';
 import { Icon } from './components/primitives.tsx';
 
 function initials(name: string): string {
@@ -31,7 +38,25 @@ export default function App(): JSX.Element {
   if (loading) {
     return <div className="login-shell">{t('ui.loading')}</div>;
   }
-  if (!session) return <LoginView />;
+  // Pengunjung tanpa sesi mendarat di HALAMAN DEPAN, bukan formulir masuk.
+  //
+  // Sebelumnya setiap orang yang membuka alamatnya langsung dihadapkan kotak email dan
+  // kata sandi — tidak ada tempat untuk menjelaskan apa produk ini, dan tidak ada jalan
+  // bagi orang yang belum punya akun. Formulir masuk kini satu tujuan di antara beberapa.
+  if (!session) {
+    switch (publicRouteFromHash(window.location.hash)) {
+      case 'login':
+        return <LoginView />;
+      case 'signup':
+        return <SignupView />;
+      case 'forgot':
+        return <ForgotPasswordView />;
+      case 'reset':
+        return <ResetPasswordView />;
+      default:
+        return <LandingView />;
+    }
+  }
 
   const current = findNavItem(view);
   const ViewComponent = VIEWS[view] ?? VIEWS.exec!;

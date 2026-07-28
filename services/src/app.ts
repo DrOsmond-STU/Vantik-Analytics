@@ -27,7 +27,7 @@ import {
   securityHeaders,
   type HttpDeps,
 } from './platform/http.ts';
-import { MODULE_KEYS } from './platform/featureFlags.ts';
+import { MODULE_KEYS, PLAN_CATALOG } from './platform/featureFlags.ts';
 import { requiresMfa } from './platform/rbac.ts';
 
 import { AuthService, AuthorizationService, DeviceService, EmployeeService } from './identity-service/index.ts';
@@ -145,6 +145,27 @@ export function createApp(options: AppOptions = {}): VantikApp {
   // Passenger menjalankan beberapa proses dan me-recycle saat idle; keadaan di memori
   // membuat batasnya terkalikan jumlah proses lalu hilang saat recycle.
   const loginLimiter = new RateLimiter(10, 60_000, db);
+
+  /**
+   * Batas pendaftaran mandiri: jauh lebih ketat daripada login.
+   *
+   * Login yang gagal tidak meninggalkan apa pun; pendaftaran yang BERHASIL membuat tenant
+   * beserta seluruh baris awalnya. Di shared hosting dengan satu berkas SQLite dan kuota
+   * disk, membiarkan satu alamat IP membuat sepuluh ruang kerja per menit sama dengan
+   * membiarkannya mengisi disk.
+   */
+  const signupLimiter = new RateLimiter(3, 60 * 60_000, db);
+
+  /**
+   * Pendaftaran mandiri aktif kecuali dimatikan secara eksplisit.
+   *
+   * Default menyala karena itulah bentuk SaaS yang ditawarkan halaman depan. Pemasangan
+   * internal yang penggunanya dibuat administrator dapat menyetel `VANTIK_SELF_SIGNUP=off`;
+   * halaman depan ikut menyembunyikan ajakan mendaftar bila dimatikan, jadi tidak ada
+   * tombol yang mengarah ke penolakan.
+   */
+  const selfSignupEnabled = (): boolean =>
+    (process.env.VANTIK_SELF_SIGNUP ?? 'on').toLowerCase() !== 'off';
   const apiLimiter = new RateLimiter(600, 60_000, db);
   const embedLimiter = new RateLimiter(120, 60_000, db);
   const idempotency = new IdempotencyStore(db);
@@ -1207,6 +1228,136 @@ export function createApp(options: AppOptions = {}): VantikApp {
         return;
       }
       res.json({ ran: await scheduler.runDueJobs({ force: true }) });
+    }),
+  );
+
+  /* ================= Permukaan publik (tanpa sesi) ================= */
+  //
+  // Rute-rute ini sengaja berada DI LUAR router `/api/v1` yang ber-`authenticate()`,
+  // dan karenanya perlu dijaga lebih ketat: satu-satunya pembatas adalah batas laju,
+  // validasi masukan, dan keputusan sadar tentang apa yang boleh dibocorkan jawabannya.
+
+  /**
+   * Katalog paket yang ditawarkan.
+   *
+   * Hanya memuat apa yang memang dipasarkan: kode, nama, harga, jumlah modul, dan kuota.
+   * TIDAK memuat daftar tenant, jumlah pelanggan, atau apa pun tentang instalasi ini.
+   */
+  app.get('/api/v1/public/plans', (_req, res) => {
+    res.json({
+      plans: PLAN_CATALOG.map((plan) => ({
+        code: plan.code,
+        name: plan.name,
+        monthlyPrice: plan.monthlyPrice,
+        annualPrice: plan.annualPrice,
+        moduleCount: Object.values(plan.features).filter(Boolean).length,
+        quotas: plan.quotas,
+        sortOrder: plan.sortOrder,
+      })),
+      signupEnabled: selfSignupEnabled(),
+      currency: 'IDR',
+    });
+  });
+
+  /**
+   * Pendaftaran mandiri: pengunjung memilih paket dan langsung mendapat ruang kerja
+   * berstatus uji coba.
+   *
+   * Dibatasi laju jauh lebih ketat daripada login karena setiap permintaan yang berhasil
+   * MEMBUAT TENANT — basis data SQLite di shared hosting tidak boleh dapat dipenuhi
+   * ruang kerja sampah oleh satu skrip.
+   *
+   * Dapat dimatikan lewat `VANTIK_SELF_SIGNUP=off` untuk pemasangan internal yang
+   * penggunanya dibuat administrator, bukan mendaftar sendiri.
+   */
+  app.post(
+    '/api/v1/public/signup',
+    signupLimiter.middleware((req) => `signup:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute((req, res) => {
+      if (!selfSignupEnabled()) {
+        res.status(403).json({ error: { key: 'error.signup_disabled', detail: null } });
+        return;
+      }
+
+      const body = req.body as {
+        organisationName?: string;
+        slug?: string;
+        planCode?: string;
+        billingCycle?: 'monthly' | 'annual';
+        fullName?: string;
+        email?: string;
+        password?: string;
+      };
+
+      if (!body.organisationName || !body.slug || !body.planCode || !body.fullName || !body.email || !body.password) {
+        throw new ValidationError('error.signup_incomplete');
+      }
+
+      const result = tenants.provision(
+        {
+          name: String(body.organisationName).slice(0, 120),
+          slug: String(body.slug).toLowerCase(),
+          planCode: String(body.planCode),
+          billingCycle: body.billingCycle === 'annual' ? 'annual' : 'monthly',
+          admin: {
+            fullName: String(body.fullName).slice(0, 120),
+            // Pendaftar mandiri belum punya nomor pegawai; Master Pegawai menuntut satu
+            // nilai, dan menandainya jelas lebih baik daripada mengarang nomor yang
+            // tampak seperti NIK sungguhan.
+            nik: `SIGNUP-${Date.now().toString(36).toUpperCase()}`,
+            email: String(body.email).trim().toLowerCase(),
+            password: String(body.password),
+          },
+          defaultLocale: 'id',
+        },
+        `signup:${clientIp(req) ?? 'unknown'}`,
+      );
+
+      // Slug dikembalikan karena pengguna membutuhkannya untuk masuk; id tenant dan id
+      // pengguna TIDAK, dan tidak ada gunanya bagi klien.
+      res.status(201).json({ slug: String(body.slug).toLowerCase(), tenantId: result.tenantId });
+    }),
+  );
+
+  /**
+   * Pemulihan kata sandi, langkah pertama.
+   *
+   * Jawabannya SELALU sama, ada atau tidak ada akun dengan alamat itu — lihat
+   * `AuthService.requestPasswordReset()` untuk alasannya.
+   */
+  app.post(
+    '/api/v1/auth/password-reset/request',
+    loginLimiter.middleware((req) => `reset-req:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute((req, res) => {
+      const body = req.body as { email?: string; tenantSlug?: string };
+      if (!body.email) throw new ValidationError('error.email_required');
+
+      auth.requestPasswordReset({
+        email: String(body.email),
+        tenantSlug: body.tenantSlug ? String(body.tenantSlug) : undefined,
+        ip: clientIp(req),
+      });
+
+      // Token TIDAK dikembalikan di sini. Ia hanya ada di antrean pesan, yang butuh izin
+      // untuk dibaca — kalau tidak, formulir ini menjadi cara memulihkan akun orang lain.
+      res.json({ accepted: true, transportConfigured: notificationTransport.delivers });
+    }),
+  );
+
+  /** Pemulihan kata sandi, langkah kedua: token + kata sandi baru. */
+  app.post(
+    '/api/v1/auth/password-reset/confirm',
+    loginLimiter.middleware((req) => `reset-confirm:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute((req, res) => {
+      const body = req.body as { token?: string; newPassword?: string };
+      if (!body.token || !body.newPassword) throw new ValidationError('error.password_required');
+
+      const result = auth.completePasswordReset(String(body.token), String(body.newPassword));
+      if (!result.ok) {
+        res.status(400).json({ error: { key: result.reasonKey ?? 'error.reset_token_invalid', detail: null } });
+        return;
+      }
+      res.json({ ok: true });
     }),
   );
 

@@ -115,6 +115,36 @@ export const api = {
     return result;
   },
 
+  /* ---------------- Permukaan publik (tanpa sesi) ---------------- */
+
+  /** Katalog paket untuk halaman depan & halaman berlangganan. */
+  plans: (): Promise<PublicPlans> => request<PublicPlans>('/public/plans'),
+
+  /** Berlangganan: membuat ruang kerja baru berstatus uji coba. */
+  signup: (input: {
+    organisationName: string;
+    slug: string;
+    planCode: string;
+    billingCycle: 'monthly' | 'annual';
+    fullName: string;
+    email: string;
+    password: string;
+  }): Promise<{ slug: string }> => request('/public/signup', { method: 'POST', body: JSON.stringify(input) }),
+
+  /**
+   * Lupa kata sandi, langkah pertama.
+   *
+   * Jawabannya sama untuk alamat terdaftar maupun tidak — server sengaja tidak
+   * memberitahu yang mana, dan antarmuka tidak boleh menyiasatinya dengan menampilkan
+   * pesan berbeda.
+   */
+  requestPasswordReset: (input: { email: string; tenantSlug?: string }): Promise<{ accepted: true; transportConfigured: boolean }> =>
+    request('/auth/password-reset/request', { method: 'POST', body: JSON.stringify(input) }),
+
+  /** Lupa kata sandi, langkah kedua: token dari pesan + kata sandi baru. */
+  confirmPasswordReset: (input: { token: string; newPassword: string }): Promise<{ ok: true }> =>
+    request('/auth/password-reset/confirm', { method: 'POST', body: JSON.stringify(input) }),
+
   async logout(): Promise<void> {
     try {
       await request('/auth/logout', { method: 'POST' });
@@ -134,6 +164,23 @@ export const api = {
 export type LoginOutcome =
   | { token: string; expiresAt: string; deviceRegistered: boolean }
   | { mfaRequired: true; challengeToken: string; expiresAt: string; recoveryAccepted: boolean };
+
+export interface PublicPlan {
+  code: string;
+  name: string;
+  monthlyPrice: number;
+  annualPrice: number;
+  moduleCount: number;
+  quotas: Record<string, number>;
+  sortOrder: number;
+}
+
+export interface PublicPlans {
+  plans: PublicPlan[];
+  /** False bila operator mematikan pendaftaran mandiri (`VANTIK_SELF_SIGNUP=off`). */
+  signupEnabled: boolean;
+  currency: string;
+}
 
 export interface MfaStatus {
   enrolled: boolean;
