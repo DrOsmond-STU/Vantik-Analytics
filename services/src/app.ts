@@ -1202,6 +1202,48 @@ export function createApp(options: AppOptions = {}): VantikApp {
     tenants.suspend(requireContext(req), req.params.id!, String((req.body as { reason?: string }).reason ?? ''));
     res.json({ ok: true });
   });
+  /* --- Persetujuan pendaftaran mandiri --- */
+
+  api.get('/tenants/pending', (req, res) => {
+    res.json({ registrations: tenants.listPendingRegistrations(requireContext(req)) });
+  });
+
+  /**
+   * Keputusan atas satu pendaftaran.
+   *
+   * Hasilnya diberitahukan ke pendaftar lewat antrean — termasuk saat DITOLAK. Penolakan
+   * senyap membuat orang mencoba masuk berulang kali tanpa pernah tahu bahwa jawabannya
+   * tidak akan berubah.
+   */
+  api.post('/tenants/:id/approval', (req, res) => {
+    const ctx = requireContext(req);
+    const body = req.body as { decision?: string; note?: string };
+    const decision = body.decision === 'rejected' ? 'rejected' : 'approved';
+    const result = tenants.decideRegistration(ctx, req.params.id!, decision, body.note);
+
+    const contact = tenants.registrationContact(req.params.id!);
+    if (contact) {
+      outbox.enqueue({
+        tenantId: req.params.id!,
+        purpose: decision === 'approved' ? 'registration_approved' : 'registration_rejected',
+        channel: 'email',
+        recipient: contact.email,
+        subject:
+          decision === 'approved'
+            ? `[Vantik] Pendaftaran ${contact.tenantName} disetujui`
+            : `[Vantik] Pendaftaran ${contact.tenantName} tidak dapat dilanjutkan`,
+        body:
+          decision === 'approved'
+            ? `Ruang kerja ${contact.tenantName} sudah aktif. Masuk memakai alamat email ini ` +
+              `beserta kata sandi yang Anda buat saat mendaftar.`
+            : `Pendaftaran ${contact.tenantName} tidak dapat dilanjutkan. ` +
+              `Alasan: ${body.note?.trim() ?? '—'}`,
+      });
+    }
+
+    res.json(result);
+  });
+
   api.post('/tenants/:id/restore', (req, res) => {
     tenants.restore(requireContext(req), req.params.id!);
     res.json({ ok: true });
@@ -1340,13 +1382,38 @@ export function createApp(options: AppOptions = {}): VantikApp {
             password: String(body.password),
           },
           defaultLocale: 'id',
+          // Pendaftaran mandiri SELALU menunggu persetujuan admin: pendaftarnya belum
+          // diverifikasi siapa pun, dan ruang kerja yang langsung hidup berarti siapa
+          // saja di internet dapat menambah tenant ke pemasangan ini sesuka hati.
+          requiresApproval: true,
         },
         `signup:${clientIp(req) ?? 'unknown'}`,
       );
 
+      // Kabar ke Platform Operator supaya antreannya tidak perlu ditengok manual.
+      for (const recipient of tenants.operatorContacts()) {
+        outbox.enqueue({
+          tenantId: result.tenantId,
+          purpose: 'registration_pending',
+          channel: 'email',
+          recipient,
+          subject: `[Vantik] Pendaftaran baru menunggu persetujuan: ${String(body.organisationName).slice(0, 80)}`,
+          body:
+            `Organisasi "${String(body.organisationName).slice(0, 120)}" mendaftar dengan alamat ` +
+            `ruang kerja "${String(body.slug).toLowerCase()}" pada paket ${String(body.planCode)}. ` +
+            `Buka Manajemen Tenant untuk menyetujui atau menolak.`,
+        });
+      }
+
       // Slug dikembalikan karena pengguna membutuhkannya untuk masuk; id tenant dan id
-      // pengguna TIDAK, dan tidak ada gunanya bagi klien.
-      res.status(201).json({ slug: String(body.slug).toLowerCase(), tenantId: result.tenantId });
+      // pengguna TIDAK, dan tidak ada gunanya bagi klien. `pendingApproval` menyatakan
+      // apa adanya bahwa ia BELUM dapat masuk — layar sukses yang menyuruh "silakan
+      // masuk" padahal login pasti ditolak adalah kebohongan kecil yang mahal.
+      res.status(201).json({
+        slug: String(body.slug).toLowerCase(),
+        tenantId: result.tenantId,
+        pendingApproval: true,
+      });
     }),
   );
 

@@ -45,7 +45,7 @@ dilakukan — perilaku yang disengaja (SECURITY.md Bagian 4), bukan kerusakan.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 471 test (424 backend + 47 komponen web)
+npm test              # 486 test (439 backend + 47 komponen web)
 npm run test:coverage # backend dengan ambang cakupan
 npm run test:web      # hanya uji komponen/DOM web app
 ```
@@ -224,6 +224,7 @@ pelanggaran baru di masa depan.
 | `tests/public.test.ts` | Permukaan tanpa sesi: katalog paket, pendaftaran mandiri, dan pemulihan kata sandi — termasuk bahwa formulir lupa sandi tidak dapat dipakai memetakan alamat mana yang punya akun |
 | `tests/password.test.ts` | Penggantian mandiri (kata sandi lama wajib) dan reset oleh admin (mencabut sesi target), plus bukti bahwa endpoint-nya benar-benar dibatasi laju |
 | `tests/presentation.test.ts` | Angka korporat memakai agregat lintas dimensi, tren tidak mencampur dimensi, cakupan per divisi, dan penegakan baca-saja pada Balanced Scorecard |
+| `tests/registration-approval.test.ts` | Pendaftaran mandiri menunggu persetujuan admin — termasuk bahwa pendaftar **tidak dapat menyetujui dirinya sendiri** meski perannya `super_admin`, bahwa tenant lama tidak ikut terkunci migrasi, dan bahwa penolakan menyimpan alasan tanpa menghapus data |
 | `tests/subscription-lifecycle.test.ts` | Siklus 1/3/6/12 bulan, invarian harga katalog↔kalkulator, penjepitan tanggal akhir bulan, dan penghentian otomatis saat masa berlaku habis — termasuk bahwa blokirnya **tidak menunggu penjadwal** dan bahwa perpanjangan tetap dapat dilakukan saat ruang kerja terkunci |
 
 Uji komponen/DOM web app berada di `frontend/web-app/tests/` (proyek vitest tersendiri,

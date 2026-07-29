@@ -295,6 +295,26 @@ VANTIK_SELF_SIGNUP=off
 Halaman depan ikut menyembunyikan ajakan mendaftar bila dimatikan, sehingga tidak ada
 tombol yang mengarah ke penolakan.
 
+**Pendaftaran mandiri SELALU menunggu persetujuan.** Pendaftar belum diverifikasi siapa
+pun, jadi ruang kerjanya dibuat berstatus `pending` dan **tidak dapat dimasuki** sampai
+seseorang memutuskannya:
+
+1. Pendaftar menerima layar "menunggu persetujuan" — bukan tombol Masuk yang pasti gagal.
+2. Setiap pemegang peran **Platform Operator** menerima pemberitahuan di antrean
+   notifikasi (lihat 8.3 — tanpa transport nyata, pesannya menunggu di antrean).
+3. Operator membuka **Manajemen Tenant → Pendaftaran menunggu persetujuan**, lalu
+   menyetujui atau menolak. Penolakan **wajib** menyertakan alasan, dan alasan itu
+   dikirimkan ke pendaftar.
+
+Yang perlu Anda siapkan: **minimal satu akun berperan Platform Operator.** Tanpa itu
+antrean tidak punya pemilik dan tidak ada yang menerima kabar pendaftaran baru — akun
+`super_admin` tetap dapat memutuskan (perannya `*:*`), tetapi ia tidak akan diberi tahu.
+Data seed menyediakan satu contoh (`operator@vantik.id`).
+
+Menolak **tidak menghapus apa pun**: tenant, pengguna, dan langganannya tetap tersimpan
+sampai retensi berjalan, sehingga keputusan dapat ditinjau ulang. Keputusan hanya berlaku
+sekali — menyetujui tenant yang sudah aktif ditolak dengan `error.registration_already_decided`.
+
 ### 8.1d Masa berlaku langganan: 1, 3, 6, atau 12 bulan
 
 Pengunjung memilih jangka waktunya sendiri saat berlangganan — 1 bulan, 3 bulan, 6 bulan,

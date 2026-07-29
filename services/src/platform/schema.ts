@@ -1119,6 +1119,32 @@ const REMAINING_MAIN_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_invoices_kind ON invoices(tenant_id, kind, status);
     `,
   },
+
+  {
+    id: '0014_registration_approval',
+    sql: `
+      -- Persetujuan admin atas pendaftaran mandiri.
+      --
+      -- Sengaja DIPISAH dari kolom \`status\`. Kolom itu sudah memikul tangga akses
+      -- komersial (trial → active → past_due → read_only → suspended); menumpangkan
+      -- "menunggu persetujuan" di sana membuat tenant yang disetujui lalu kedaluwarsa
+      -- kehilangan jejak bahwa ia pernah disetujui, dan membuat setiap pembacaan status
+      -- harus tahu konteksnya. Dua pertanyaan berbeda — "boleh masuk sama sekali?" dan
+      -- "langganannya bagaimana?" — mendapat kolom masing-masing.
+      --
+      -- Nilai bawaan 'approved' DISENGAJA: tenant yang sudah ada dibuat oleh operator,
+      -- dan migrasi yang diam-diam mengunci seluruh pelanggan lama adalah kerusakan,
+      -- bukan pengetatan. Hanya jalur pendaftaran mandiri yang menulis 'pending'.
+      ALTER TABLE tenants ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved';
+      ALTER TABLE tenants ADD COLUMN approval_requested_at TEXT;
+      ALTER TABLE tenants ADD COLUMN approval_decided_at   TEXT;
+      ALTER TABLE tenants ADD COLUMN approval_decided_by   TEXT;
+      -- Alasan penolakan / catatan persetujuan. Ditolak TIDAK berarti dihapus:
+      -- datanya tetap ada sampai retensi berjalan, dan alasannya dapat ditinjau.
+      ALTER TABLE tenants ADD COLUMN approval_note TEXT;
+      CREATE INDEX idx_tenants_approval ON tenants(approval_status);
+    `,
+  },
 ];
 
 /**

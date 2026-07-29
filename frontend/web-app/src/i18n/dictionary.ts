@@ -297,6 +297,26 @@ export const dictionary = {
     'Masa berlaku langganan sudah habis. Data Anda tetap dapat dilihat dan diunduh, tetapi perubahan dihentikan.',
     'Your subscription has expired. Your data stays readable and downloadable, but changes are on hold.',
   ],
+  'error.registration_pending_approval': [
+    'Pendaftaran Anda sedang menunggu persetujuan admin. Anda akan diberi kabar lewat email begitu diputuskan.',
+    'Your registration is waiting for admin approval. You will be emailed once a decision is made.',
+  ],
+  'error.registration_rejected': [
+    'Pendaftaran ini tidak disetujui, sehingga ruang kerjanya tidak dapat dibuka.',
+    'This registration was not approved, so the workspace cannot be opened.',
+  ],
+  'error.registration_already_decided': [
+    'Pendaftaran ini sudah pernah diputuskan.',
+    'This registration has already been decided.',
+  ],
+  'error.rejection_reason_required': [
+    'Alasan penolakan wajib diisi — pendaftar berhak tahu mengapa.',
+    'A rejection reason is required — the applicant deserves to know why.',
+  ],
+  'recovery.wait_for_approval': [
+    'Tidak ada yang perlu Anda lakukan. Hubungi admin bila lebih dari satu hari kerja belum ada kabar.',
+    'Nothing to do on your side. Contact the admin if you hear nothing within one business day.',
+  ],
   'error.billing_cycle_unknown': [
     'Jangka waktu berlangganan tidak dikenali.',
     'That subscription term is not recognised.',
@@ -856,6 +876,18 @@ export const dictionary = {
   'ui.cycle_save': ['hemat {percent}%', 'save {percent}%'],
   'ui.per_cycle': ['/{cycle}', '/{cycle}'],
   'ui.plan_per_month_equivalent': ['Setara {price} per bulan', 'Equivalent to {price} per month'],
+  'ui.signup_pending_title': ['Pendaftaran diterima', 'Registration received'],
+  'ui.signup_pending_body': [
+    'Ruang kerja "{slug}" sudah dibuat dan sedang menunggu persetujuan admin. Anda akan menerima email begitu disetujui — belum perlu mencoba masuk sekarang.',
+    'Workspace "{slug}" has been created and is waiting for admin approval. You will get an email once it is approved — there is no need to try signing in yet.',
+  ],
+  'ui.pending_registrations': ['Pendaftaran menunggu persetujuan', 'Registrations awaiting approval'],
+  'ui.pending_none': ['Tidak ada pendaftaran yang menunggu.', 'No registrations are waiting.'],
+  'ui.approval_note': ['Catatan / alasan', 'Note / reason'],
+  'ui.approval_reject_hint': [
+    'Wajib diisi bila menolak; isinya dikirimkan ke pendaftar.',
+    'Required when rejecting; the text is sent to the applicant.',
+  ],
   'ui.subscription_days_left': ['{days} hari lagi', '{days} days left'],
   'ui.subscription_expired_days': ['Lewat {days} hari', '{days} days overdue'],
   'ui.subscription_expiring_soon': [

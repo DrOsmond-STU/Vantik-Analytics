@@ -129,7 +129,14 @@ export const api = {
     fullName: string;
     email: string;
     password: string;
-  }): Promise<{ slug: string }> => request('/public/signup', { method: 'POST', body: JSON.stringify(input) }),
+    /**
+     * Jawaban memuat `pendingApproval: true` selama pendaftaran menunggu keputusan
+     * admin — yang kini SELALU terjadi pada pendaftaran mandiri. Antarmuka wajib
+     * membacanya alih-alih mengasumsikan ruang kerja langsung hidup: layar sukses yang
+     * menyuruh "silakan masuk" hanya akan mengantar ke penolakan.
+     */
+  }): Promise<{ slug: string; pendingApproval?: boolean }> =>
+    request('/public/signup', { method: 'POST', body: JSON.stringify(input) }),
 
   /**
    * Lupa kata sandi, langkah pertama.

@@ -1323,6 +1323,112 @@ export function DeviceView(): JSX.Element {
 
 /* ================= Manajemen Tenant — PRD 6.26 ================= */
 
+interface PendingRegistration {
+  id: string;
+  name: string;
+  slug: string;
+  plan_code: string;
+  billing_cycle: string;
+  admin_email: string;
+  admin_name: string;
+  approval_requested_at: string | null;
+}
+
+/**
+ * Antrean pendaftaran mandiri yang menunggu keputusan.
+ *
+ * Hanya tampil bagi peran yang berwenang membuat tenant. Bagi peran lain, memanggil
+ * rutenya akan ditolak server — jadi panelnya disembunyikan alih-alih menampilkan
+ * kegagalan yang tidak dapat ditindaklanjuti siapa pun.
+ */
+function PendingRegistrationsPanel(): JSX.Element | null {
+  const { t, locale, session } = useApp();
+  const [nonce, setNonce] = useState(0);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [errorKey, setErrorKey] = useState<string | null>(null);
+  const boleh = session?.permissions.includes('tenant:provision') ?? false;
+  const state = useAsync(
+    () => (boleh ? api.get<{ registrations: PendingRegistration[] }>('/tenants/pending') : Promise.resolve({ registrations: [] })),
+    [nonce, boleh],
+  );
+
+  if (!boleh) return null;
+
+  async function decide(id: string, decision: 'approved' | 'rejected'): Promise<void> {
+    setBusy(id);
+    setErrorKey(null);
+    try {
+      await api.post(`/tenants/${id}/approval`, { decision, note: notes[id] ?? '' });
+      setNonce((n) => n + 1);
+    } catch (error) {
+      setErrorKey(error instanceof ApiError ? error.key : 'error.internal');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Panel title={t('ui.pending_registrations')} span="full">
+      {errorKey && <div className="note warn" style={{ marginBottom: 12 }}>{t(errorKey)}</div>}
+      {!state.data || state.data.registrations.length === 0 ? (
+        <div className="note">{t('ui.pending_none')}</div>
+      ) : (
+        <div className="table-scroll">
+          <table className="stack-mobile">
+            <thead>
+              <tr>
+                <th>{t('table.name')}</th>
+                <th>Slug</th>
+                <th>{t('ui.plan_label')}</th>
+                <th>{locale === 'id' ? 'Calon admin' : 'Prospective admin'}</th>
+                <th>{t('ui.approval_note')}</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {state.data.registrations.map((r) => (
+                <tr key={r.id}>
+                  <td data-label={t('table.name')}>
+                    {r.name}
+                    <div className="feed-time">{r.approval_requested_at ? formatDate(r.approval_requested_at, locale) : '—'}</div>
+                  </td>
+                  <td className="mono" data-label="Slug">{r.slug}</td>
+                  <td data-label={t('ui.plan_label')}>
+                    {r.plan_code}
+                    <div className="feed-time">{t(`ui.cycle_${r.billing_cycle}`)}</div>
+                  </td>
+                  <td data-label="Admin">
+                    {r.admin_name}
+                    <div className="feed-time">{r.admin_email}</div>
+                  </td>
+                  <td data-label={t('ui.approval_note')}>
+                    <input
+                      value={notes[r.id] ?? ''}
+                      placeholder={t('ui.approval_reject_hint')}
+                      onChange={(e) => setNotes((prev) => ({ ...prev, [r.id]: e.target.value }))}
+                    />
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <button type="button" className="btn primary" disabled={busy === r.id} onClick={() => void decide(r.id, 'approved')}>
+                        {t('action.approve')}
+                      </button>
+                      <button type="button" className="btn" disabled={busy === r.id} onClick={() => void decide(r.id, 'rejected')}>
+                        {t('action.reject')}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 export function TenantView(): JSX.Element {
   const { t, locale, session } = useApp();
   const state = useAsync(() => api.get<{ tenants: Array<{ id: string; name: string; slug: string; status: string; isolation_level: string; created_at: string }> }>('/tenants'), []);
@@ -1334,6 +1440,8 @@ export function TenantView(): JSX.Element {
       <ViewState state={state}>
         {(data) => (
           <div className="grid g-12">
+            <PendingRegistrationsPanel />
+
             <Panel span="wide">
               <div className="table-scroll">
                 <table className="stack-mobile">

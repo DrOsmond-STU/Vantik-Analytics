@@ -217,6 +217,38 @@ export class AuthService {
       return { kind: 'rejected', reasonKey: 'error.invalid_credentials' };
     }
 
+    // --- Persetujuan pendaftaran -------------------------------------
+    //
+    // Diperiksa SETELAH kata sandi terbukti benar, bukan sebelumnya. Menempatkannya
+    // lebih awal akan memberi tahu siapa pun yang menebak alamat bahwa ada organisasi
+    // yang sedang mendaftar dengan alamat itu — jawaban yang tidak berhak ia terima.
+    // Setelah kata sandi benar, penanyanya memang pemilik akun, dan ia berhak tahu
+    // persis mengapa ia belum bisa masuk.
+    const approval = this.tenantApproval(user.tenant_id);
+    if (approval && approval.approval_status !== 'approved') {
+      this.recordAttempt(user.tenant_id, email, input.ip, 'bad_credentials', input.geo);
+      this.audit.recordDenial({
+        tenantId: user.tenant_id,
+        actorUserId: user.id,
+        actorLabel: email,
+        actorIp: input.ip ?? null,
+        action: 'auth.login',
+        module: 'Otorisasi User',
+        detail: { reason: `registration_${approval.approval_status}` },
+      });
+      return approval.approval_status === 'rejected'
+        ? {
+            kind: 'rejected',
+            reasonKey: 'error.registration_rejected',
+            recoveryKey: 'recovery.contact_admin',
+          }
+        : {
+            kind: 'rejected',
+            reasonKey: 'error.registration_pending_approval',
+            recoveryKey: 'recovery.wait_for_approval',
+          };
+    }
+
     // --- Impossible travel (PRD 6.30, SECURITY.md 17.2) -------------
     if (input.geo) {
       const travel = this.checkImpossibleTravel(user, { ...input.geo, at });
@@ -801,6 +833,13 @@ export class AuthService {
       .get(userId, tenantId) as UserRow | undefined;
     if (!user) throw new UnauthenticatedError();
     return user;
+  }
+
+  /** Keadaan persetujuan tenant; `undefined` bila tenant tidak ada. */
+  private tenantApproval(tenantId: string): { approval_status: string; approval_note: string | null } | undefined {
+    return this.db
+      .prepare('SELECT approval_status, approval_note FROM tenants WHERE id = ?')
+      .get(tenantId) as { approval_status: string; approval_note: string | null } | undefined;
   }
 
   private findUser(email: string, tenantSlug?: string): UserRow | undefined {

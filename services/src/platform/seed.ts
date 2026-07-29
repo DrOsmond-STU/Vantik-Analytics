@@ -29,6 +29,21 @@ import type { AuditService } from '../audit-service/index.ts';
 import type { DatasetRow } from '../data-platform-service/dataQuality.ts';
 import { STANDARD_ROLES } from './rbac.ts';
 
+/**
+ * Rahasia MFA akun uji coba — TETAP dan sengaja dicetak.
+ *
+ * Akun uji coba ada supaya seseorang dapat membuka aplikasi dan melihatnya bekerja.
+ * Perannya `super_admin` agar seluruh modul terlihat, dan peran itu MEWAJIBKAN
+ * verifikasi dua langkah (SECURITY.md Bagian 4) — jadi tanpa MFA yang sudah terpasang,
+ * "akun uji coba" berarti layar pendaftaran authenticator, bukan aplikasinya.
+ *
+ * Rahasia tetap ini aman HANYA karena akun ini data contoh: `seed` tidak dijalankan di
+ * production (panduan pemasangan menyatakannya, dan daftar periksa pasca-pasang
+ * memintanya diverifikasi). Kalau seseorang menjalankannya di production, akun inilah
+ * yang pertama harus dihapus.
+ */
+const TRIAL_MFA_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+
 /** Membangun konteks super-admin untuk proses penanaman data (bukan jalur HTTP). */
 function seedContext(db: Db, audit: AuditService, tenantId: string, userId: string): RequestContext {
   const tenantRow = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tenantId) as Parameters<typeof toTenantInfo>[0];
@@ -141,6 +156,10 @@ export async function seed(): Promise<void> {
     ['Maya Kusuma', '3273010101940005', 'Data & Analitik', 'Data Steward', 'maya@demo.vantik.id'],
     ['Andi Setiawan', '3273010101950006', 'Riset', 'Peneliti', 'andi@demo.vantik.id'],
     ['Putri Lestari', '3273010101960007', 'Kepatuhan', 'Auditor', 'putri@demo.vantik.id'],
+    // Platform Operator: peran lintas-tenant yang memutuskan pendaftaran mandiri.
+    // Tanpa satu pun akun berperan ini, antrean persetujuan tidak punya pemilik dan
+    // kabar "ada pendaftaran baru" tidak punya alamat tujuan.
+    ['Gilang Prakoso', '3273010101970008', 'Operasional Platform', 'Platform Operator', 'operator@vantik.id'],
   ] as const;
 
   for (const [fullName, nik, division, position, email] of staff) {
@@ -154,6 +173,7 @@ export async function seed(): Promise<void> {
     'maya@demo.vantik.id': ['data_steward'],
     'andi@demo.vantik.id': ['business_analyst', 'ai_analyst'],
     'putri@demo.vantik.id': ['auditor'],
+    'operator@vantik.id': ['platform_operator'],
   };
 
   for (const [fullName, , , , email] of staff) {
@@ -759,6 +779,7 @@ export async function seed(): Promise<void> {
   console.log('[seed] tenant slug : demo');
   console.log('[seed] admin login : admin@demo.vantik.id / VantikDemo#2026');
   console.log('[seed] other users : rizky|sari|bagas|maya|andi|putri @demo.vantik.id (same password)');
+  console.log('[seed] operator     : operator@vantik.id (Platform Operator — menyetujui pendaftaran)');
   console.log(
     `[seed] isi        : ${counts.baris} baris dataset · ${counts.skor} skor KPI · ` +
       `${counts.alert} kejadian alert · ${counts.ai} pertanyaan AI · ${counts.faktur} faktur`,
@@ -779,10 +800,142 @@ export async function seed(): Promise<void> {
   console.log('[seed]   maya   → Data Quality Center, sertifikasi dataset (wajib MFA)');
   console.log('[seed]   bagas  → Koneksi Eksternal, Data Modeling (wajib MFA)');
   console.log('[seed]   admin  → SELURUH modul, tetapi wajib mengaktifkan MFA lebih dulu');
+  console.log('[seed]   operator → Manajemen Tenant: antrean pendaftaran menunggu persetujuan (wajib MFA)');
   console.log('[seed]');
   console.log('[seed] Untuk melihat seluruh aplikasi dalam satu sesi: masuk sebagai admin,');
   console.log('[seed] lalu aktifkan Verifikasi Dua Langkah di menu "Perangkat & Sesi".');
+
+  seedTrialAccount(db, audit, tenants, keyring);
+
   db.close();
+}
+
+/**
+ * SATU akun uji coba yang benar-benar siap dipakai.
+ *
+ * Berbeda dari tenant `demo` yang punya tujuh pengguna berperan sempit untuk
+ * memperagakan RBAC, akun ini dibuat untuk satu hal: dibuka, dilihat, dan dinilai.
+ * Karena itu ia sengaja:
+ *
+ *  - **sudah disetujui**, sehingga tidak tersangkut antrean persetujuan pendaftaran;
+ *  - **sudah terpasang MFA** dengan rahasia yang dicetak, karena `super_admin`
+ *    mewajibkannya dan akun uji coba yang berhenti di layar pendaftaran authenticator
+ *    tidak menguji apa pun;
+ *  - **berstatus uji coba yang akan berakhir dalam 7 hari**, supaya peringatan masa
+ *    berlaku dan tombol perpanjang benar-benar terlihat alih-alih hanya ada di kode.
+ */
+function seedTrialAccount(
+  db: Db,
+  audit: AuditService,
+  tenants: ReturnType<typeof createApp>['tenants'],
+  keyring: ReturnType<typeof createApp>['keyring'],
+): void {
+  if (db.prepare("SELECT id FROM tenants WHERE slug = 'ujicoba'").get()) return;
+
+  const { tenantId, adminUserId } = tenants.provision(
+    {
+      name: 'PT Coba Analitik',
+      slug: 'ujicoba',
+      planCode: 'professional',
+      billingCycle: 'quarterly',
+      // Tujuh hari: cukup untuk dipakai, cukup dekat untuk memperlihatkan peringatan
+      // masa berlaku yang muncul pada H-7.
+      trialDays: 7,
+      admin: {
+        fullName: 'Pengguna Uji Coba',
+        nik: '3273010101950002',
+        email: 'uji@vantik.id',
+        password: 'VantikUji#2026',
+        division: 'Operasional',
+        position: 'Super Admin',
+      },
+      defaultLocale: 'id',
+    },
+    'seed',
+  );
+
+  // MFA dipasang langsung: rahasianya dicetak supaya dapat dimasukkan ke aplikasi
+  // authenticator, dan kode pemulihan TIDAK dibuat di sini — jalur normalnya lewat
+  // "Perangkat & Sesi", dan menaruh kode pemulihan di log akan menjadikannya rahasia
+  // yang tersimpan di dua tempat sekaligus.
+  db.prepare(
+    `UPDATE system_user
+        SET mfa_secret = ?, mfa_enrolled = 1, mfa_activated_at = ?, updated_at = ?
+      WHERE id = ?`,
+  ).run(TRIAL_MFA_SECRET, new Date().toISOString(), new Date().toISOString(), adminUserId);
+
+  const ctx = seedContext(db, audit, tenantId, adminUserId);
+
+  /* --- Data secukupnya untuk melihat aplikasi berisi, bukan kosong --- */
+
+  const dataset = new DatasetService(ctx, new MeteringService(ctx)).upload({
+    filename: 'penjualan_cabang.csv',
+    content: csv(
+      ['cabang', 'kanal', 'unit_terjual', 'nilai_transaksi', 'skor_kepuasan'],
+      Array.from({ length: 90 }, (_, i) => [
+        ['Cabang Jakarta', 'Cabang Surabaya', 'Cabang Medan'][i % 3]!,
+        ['Toko', 'Daring', 'Mitra'][i % 3]!,
+        40 + Math.round(pseudo(31, i) * 60),
+        4_500_000 + Math.round(pseudo(37, i) * 5_500_000),
+        (3.4 + pseudo(41, i) * 1.5).toFixed(2),
+      ]),
+    ),
+  });
+
+  const kpis = new KpiService(ctx);
+  const kpi = kpis.create({
+    code: 'KPI-KEPUASAN',
+    name: 'Skor Kepuasan Pelanggan',
+    formula: 'AVG(skor_kepuasan)',
+    datasetId: dataset.dataset.id,
+    measureField: 'skor_kepuasan',
+    dimensionField: 'cabang',
+    unit: 'skor',
+    direction: 'higher_better',
+    weight: 1,
+    target: 4.5,
+    thresholds: [
+      { level: 'at_risk', comparator: 'lte', value: 4.2 },
+      { level: 'critical', comparator: 'lte', value: 3.8 },
+    ],
+  });
+
+  // Enam bulan riwayat supaya grafik tren punya bentuk, bukan satu titik.
+  const barisDataset = new DatasetService(ctx).allRows(dataset.dataset.id);
+  for (let back = 5; back >= 0; back--) {
+    const bulan = new Date();
+    bulan.setUTCMonth(bulan.getUTCMonth() - back);
+    const period = bulan.toISOString().slice(0, 7);
+    const faktor = 0.9 + pseudo(53, back) * 0.22;
+    kpis.captureScores(
+      kpi.id,
+      period,
+      barisDataset.map((r) => ({
+        ...r,
+        skor_kepuasan: typeof r.skor_kepuasan === 'number' ? r.skor_kepuasan * faktor : null,
+      })),
+    );
+  }
+
+  new DashboardService(ctx).create({
+    name: 'Ringkasan Penjualan',
+    description: 'Contoh dasbor siap pakai untuk akun uji coba',
+  });
+
+  console.log('');
+  console.log('[seed] ─────────── AKUN UJI COBA (satu akun, siap pakai) ───────────');
+  console.log('[seed] kode organisasi : ujicoba');
+  console.log('[seed] email           : uji@vantik.id');
+  console.log('[seed] kata sandi      : VantikUji#2026');
+  console.log(`[seed] kode MFA        : ${TRIAL_MFA_SECRET}`);
+  console.log('[seed]                   (masukkan sebagai "kunci yang dimasukkan manual"');
+  console.log('[seed]                    di Google Authenticator / Authy, lalu pakai kodenya)');
+  console.log('[seed] paket           : Professional · uji coba 7 hari · siklus 3 bulan');
+  console.log('[seed] isi             : 90 baris penjualan, 1 KPI dengan 6 bulan riwayat, 1 dasbor');
+  console.log('[seed] Akun ini super_admin: SELURUH modul terbuka, termasuk Langganan & Paket');
+  console.log('[seed] tempat peringatan masa berlaku dan tombol perpanjang dapat dilihat.');
+  console.log('[seed] ──────────────────────────────────────────────────────────────');
+  void keyring;
 }
 
 const invokedDirectly = process.argv[1]?.includes('seed');

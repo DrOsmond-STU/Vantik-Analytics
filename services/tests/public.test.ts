@@ -63,6 +63,38 @@ async function daftar(slug: string, email = `admin@${slug}.test`): Promise<numbe
   return response.status;
 }
 
+/**
+ * Menyetujui pendaftaran langsung di basis data.
+ *
+ * Jalur persetujuan lewat HTTP diuji tersendiri di `registration-approval.test.ts`;
+ * di sini ia hanya prasyarat, jadi memakainya lewat rute akan menambah kebisingan
+ * (butuh operator, sesi, MFA) tanpa menguji apa pun yang belum diuji di sana.
+ */
+function setujui(slug: string): void {
+  db.prepare("UPDATE tenants SET approval_status = 'approved' WHERE slug = ?").run(slug);
+}
+
+async function masukSebagai(slug: string, email = `admin@${slug}.test`, password = TEST_PASSWORD) {
+  return request(app)
+    .post('/api/v1/auth/login')
+    .send({
+      email,
+      password,
+      tenantSlug: slug,
+      fingerprint: {
+        userAgent: 'Mozilla/5.0 Daftar',
+        screenResolution: '1920x1080',
+        colorDepth: 24,
+        timezone: 'Asia/Jakarta',
+        language: 'id',
+        fonts: ['Inter'],
+        canvasHash: 'c-daftar',
+        webglHash: 'w-daftar',
+        platform: 'Linux x86_64',
+      },
+    });
+}
+
 describe('Katalog paket publik', () => {
   it('TC-PUB-01 — paket dapat dibaca tanpa sesi, untuk halaman depan', async () => {
     const response = await request(app).get('/api/v1/public/plans');
@@ -102,25 +134,17 @@ describe('Katalog paket publik', () => {
 });
 
 describe('Pendaftaran mandiri', () => {
-  it('TC-PUB-04 — pengunjung dapat berlangganan dan langsung masuk', async () => {
+  it('TC-PUB-04 — pengunjung berlangganan, lalu MENUNGGU persetujuan sebelum dapat masuk', async () => {
     expect(await daftar('pelangganbaru')).toBe(201);
 
-    const login = await request(app).post('/api/v1/auth/login').send({
-      email: 'admin@pelangganbaru.test',
-      password: TEST_PASSWORD,
-      tenantSlug: 'pelangganbaru',
-      fingerprint: {
-        userAgent: 'Mozilla/5.0 Daftar',
-        screenResolution: '1920x1080',
-        colorDepth: 24,
-        timezone: 'Asia/Jakarta',
-        language: 'id',
-        fonts: ['Inter'],
-        canvasHash: 'c-daftar',
-        webglHash: 'w-daftar',
-        platform: 'Linux x86_64',
-      },
-    });
+    const ditolak = await masukSebagai('pelangganbaru');
+    expect(ditolak.status).toBe(401);
+    expect(ditolak.body.error.key).toBe('error.registration_pending_approval');
+
+    // Persetujuan admin membuka pintunya — dan hanya itu yang membukanya.
+    setujui('pelangganbaru');
+
+    const login = await masukSebagai('pelangganbaru');
     expect(login.status, JSON.stringify(login.body)).toBe(200);
     expect(login.body.token).toBeTruthy();
   });
@@ -200,6 +224,7 @@ describe('Pemulihan kata sandi', () => {
 
   it('TC-PUB-10 — perjalanan lengkap: lupa → token dari antrean → sandi baru berlaku', async () => {
     await daftar('pulih');
+    setujui('pulih'); // pemulihan kata sandi diuji pada ruang kerja yang sudah aktif
 
     const minta = await request(app)
       .post('/api/v1/auth/password-reset/request')
@@ -346,6 +371,7 @@ describe('Pemulihan kata sandi', () => {
 
   it('TC-PUB-18 — pemulihan mencabut sesi yang sedang berjalan', async () => {
     await daftar('cabutsesi');
+    setujui('cabutsesi'); // butuh sesi yang benar-benar hidup untuk dapat dicabut
     const fingerprint = {
       userAgent: 'Mozilla/5.0 Cabut',
       screenResolution: '1920x1080',

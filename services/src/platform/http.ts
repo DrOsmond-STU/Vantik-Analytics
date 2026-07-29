@@ -69,8 +69,25 @@ export function authenticate(deps: HttpDeps) {
 
       const tenantRow = deps.db
         .prepare('SELECT * FROM tenants WHERE id = ? AND deleted_at IS NULL')
-        .get(session.tenantId) as Parameters<typeof toTenantInfo>[0] | undefined;
+        .get(session.tenantId) as
+        | (Parameters<typeof toTenantInfo>[0] & { approval_status?: string })
+        | undefined;
       if (!tenantRow) throw new UnauthenticatedError('error.tenant_unavailable');
+
+      // Pendaftaran yang belum disetujui tidak boleh melewati titik ini.
+      //
+      // Login sudah menolaknya lebih dulu, jadi seharusnya tidak ada token yang sampai
+      // ke sini — "seharusnya" itulah alasan pemeriksaan kedua ada. Bila persetujuan
+      // dicabut setelah token terbit, atau sebuah jalur lain menerbitkan token tanpa
+      // melewati `login()`, gerbangnya tetap satu tempat yang dilewati SETIAP permintaan
+      // terautentikasi.
+      if (tenantRow.approval_status !== undefined && tenantRow.approval_status !== 'approved') {
+        throw new UnauthenticatedError(
+          tenantRow.approval_status === 'rejected'
+            ? 'error.registration_rejected'
+            : 'error.registration_pending_approval',
+        );
+      }
 
       const user = deps.db
         .prepare('SELECT * FROM system_user WHERE id = ? AND tenant_id = ?')

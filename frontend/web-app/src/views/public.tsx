@@ -331,7 +331,7 @@ export function SignupView(): JSX.Element {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [errorKey, setErrorKey] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
+  const [done, setDone] = useState<{ slug: string; pendingApproval: boolean } | null>(null);
 
   useEffect(() => {
     api.plans().then(setCatalog).catch(() => setCatalog(null));
@@ -362,7 +362,7 @@ export function SignupView(): JSX.Element {
         email,
         password,
       });
-      setDone(result.slug);
+      setDone({ slug: result.slug, pendingApproval: result.pendingApproval === true });
     } catch (error) {
       setErrorKey(error instanceof ApiError ? error.key : 'error.internal');
     } finally {
@@ -374,11 +374,22 @@ export function SignupView(): JSX.Element {
     return (
       <PublicShell>
         <section className="public-form">
+          {/* Layar ini menyatakan keadaan yang SEBENARNYA. Selama pendaftaran menunggu
+              persetujuan, tombol "Masuk" hanya akan mengantar ke penolakan, dan orang
+              yang ditolak akan mengira kata sandinya salah lalu mencoba lagi sampai
+              akunnya terkunci. */}
           <Card className="login-card">
-            <h1>{t('ui.signup_done_title')}</h1>
-            <p>{t('ui.signup_done_body', { slug: done })}</p>
-            <button type="button" className="btn primary" style={{ width: '100%', justifyContent: 'center' }} onClick={() => goTo('login')}>
-              {t('action.login')}
+            <h1>{t(done.pendingApproval ? 'ui.signup_pending_title' : 'ui.signup_done_title')}</h1>
+            <p>
+              {t(done.pendingApproval ? 'ui.signup_pending_body' : 'ui.signup_done_body', { slug: done.slug })}
+            </p>
+            <button
+              type="button"
+              className={done.pendingApproval ? 'btn' : 'btn primary'}
+              style={{ width: '100%', justifyContent: 'center' }}
+              onClick={() => goTo(done.pendingApproval ? 'landing' : 'login')}
+            >
+              {t(done.pendingApproval ? 'action.back_to_home' : 'action.login')}
             </button>
           </Card>
         </section>

@@ -24,6 +24,14 @@ export interface ProvisionInput {
   admin: { fullName: string; nik: string; email: string; password: string; division?: string; position?: string };
   isolationLevel?: 'shared_schema' | 'separate_schema' | 'separate_db';
   defaultLocale?: 'id' | 'en';
+  /**
+   * Menandai pendaftaran yang masih menunggu persetujuan admin.
+   *
+   * Dinyatakan oleh PEMANGGIL, bukan disimpulkan di sini: provisioning oleh Platform
+   * Operator sudah merupakan persetujuan itu sendiri — memintanya menyetujui ulang apa
+   * yang baru saja ia buat hanya menambah langkah tanpa menambah kendali.
+   */
+  requiresApproval?: boolean;
 }
 
 export interface TenantRecord {
@@ -106,8 +114,9 @@ export class TenantService {
       this.db
         .prepare(
           `INSERT INTO tenants (id, name, slug, status, isolation_level, accent_color, logo_text,
-                                white_label, default_locale, max_devices_per_user, created_at)
-           VALUES (?,?,?,'trial',?,NULL,NULL,?,?,1,?)`,
+                                white_label, default_locale, max_devices_per_user, created_at,
+                                approval_status, approval_requested_at)
+           VALUES (?,?,?,'trial',?,NULL,NULL,?,?,1,?,?,?)`,
         )
         .run(
           tenantId,
@@ -117,6 +126,8 @@ export class TenantService {
           input.planCode === 'enterprise' ? 1 : 0,
           input.defaultLocale ?? 'id',
           at,
+          input.requiresApproval ? 'pending' : 'approved',
+          input.requiresApproval ? at : null,
         );
 
       this.db
@@ -208,6 +219,132 @@ export class TenantService {
       return own ? [own as unknown as TenantRecord] : [];
     }
     return this.operator.listTenants() as unknown as TenantRecord[];
+  }
+
+  /* ---------------- Persetujuan pendaftaran mandiri ---------------- */
+
+  /**
+   * Antrean pendaftaran yang menunggu keputusan.
+   *
+   * Hanya untuk peran yang berwenang membuat tenant (`tenant:provision`) — Platform
+   * Operator. Admin sebuah tenant TIDAK boleh melihat pendaftaran organisasi lain;
+   * daftar ini memuat nama organisasi dan email calon administrator, yang bukan
+   * urusannya.
+   */
+  listPendingRegistrations(ctx: RequestContext): Array<{
+    id: string;
+    name: string;
+    slug: string;
+    plan_code: string;
+    billing_cycle: string;
+    admin_email: string;
+    admin_name: string;
+    approval_requested_at: string | null;
+    created_at: string;
+  }> {
+    ctx.require('tenant:provision', { module: 'Manajemen Tenant' });
+    return this.db
+      .prepare(
+        `SELECT t.id, t.name, t.slug, t.approval_requested_at, t.created_at,
+                s.plan_code, s.billing_cycle,
+                u.email AS admin_email, e.full_name AS admin_name
+           FROM tenants t
+           JOIN subscriptions s ON s.tenant_id = t.id
+           JOIN system_user   u ON u.tenant_id = t.id
+           JOIN employee_master e ON e.id = u.employee_id
+          WHERE t.approval_status = 'pending' AND t.deleted_at IS NULL
+          GROUP BY t.id
+          ORDER BY t.approval_requested_at ASC`,
+      )
+      .all() as ReturnType<TenantService['listPendingRegistrations']>;
+  }
+
+  /**
+   * Menyetujui atau menolak sebuah pendaftaran.
+   *
+   * Penolakan TIDAK menghapus apa pun. Data pendaftar tetap ada sampai retensi berjalan,
+   * dan alasannya tersimpan — keputusan yang tidak dapat ditinjau ulang bukan keputusan
+   * administratif, melainkan penghapusan yang tidak tercatat.
+   */
+  decideRegistration(
+    ctx: RequestContext,
+    tenantId: string,
+    decision: 'approved' | 'rejected',
+    note?: string,
+  ): { tenantId: string; approvalStatus: string } {
+    ctx.require('tenant:provision', { module: 'Manajemen Tenant', objectId: tenantId });
+
+    const tenant = this.db
+      .prepare("SELECT id, name, approval_status FROM tenants WHERE id = ? AND deleted_at IS NULL")
+      .get(tenantId) as { id: string; name: string; approval_status: string } | undefined;
+    if (!tenant) throw new NotFoundError();
+
+    // Keputusan hanya berlaku sekali. Tanpa penjagaan ini, "setujui" pada tenant yang
+    // sudah lama aktif akan menulis ulang tanggal keputusannya dan mengaburkan riwayat.
+    if (tenant.approval_status !== 'pending') {
+      throw new ConflictError('error.registration_already_decided', {
+        approvalStatus: tenant.approval_status,
+      });
+    }
+    if (decision === 'rejected' && !note?.trim()) {
+      // Penolakan tanpa alasan tidak dapat dijelaskan kepada pendaftar, dan tidak dapat
+      // ditinjau kemudian.
+      throw new ValidationError('error.rejection_reason_required');
+    }
+
+    const at = nowIso();
+    this.db
+      .prepare(
+        `UPDATE tenants
+            SET approval_status = ?, approval_decided_at = ?, approval_decided_by = ?, approval_note = ?
+          WHERE id = ?`,
+      )
+      .run(decision, at, ctx.actor.userId, note?.trim() ?? null, tenantId);
+
+    this.audit.record({
+      tenantId,
+      actorUserId: ctx.actor.userId,
+      actorLabel: ctx.actor.displayName,
+      actorIp: ctx.ip,
+      action: decision === 'approved' ? 'tenant.registration_approved' : 'tenant.registration_rejected',
+      module: 'Manajemen Tenant',
+      objectType: 'tenant',
+      objectId: tenantId,
+      objectLabel: tenant.name,
+      severity: 'critical',
+      operatorAccess: true,
+      detail: { note: note?.trim() ?? null },
+    });
+
+    return { tenantId, approvalStatus: decision };
+  }
+
+  /** Alamat administrator pertama sebuah tenant — penerima kabar keputusan. */
+  registrationContact(tenantId: string): { email: string; name: string; tenantName: string } | undefined {
+    return this.db
+      .prepare(
+        `SELECT u.email AS email, e.full_name AS name, t.name AS tenantName
+           FROM system_user u
+           JOIN employee_master e ON e.id = u.employee_id
+           JOIN tenants t ON t.id = u.tenant_id
+          WHERE u.tenant_id = ?
+          ORDER BY u.created_at ASC LIMIT 1`,
+      )
+      .get(tenantId) as { email: string; name: string; tenantName: string } | undefined;
+  }
+
+  /** Alamat seluruh Platform Operator aktif — penerima kabar pendaftaran baru. */
+  operatorContacts(): string[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT DISTINCT u.email AS email
+             FROM system_user u
+             JOIN role_assignment ra ON ra.user_id = u.id
+            WHERE ra.role_id = 'role_platform_operator' AND u.status = 'active'`,
+        )
+        .all() as Array<{ email: string }>
+    ).map((r) => r.email);
   }
 
   /**
