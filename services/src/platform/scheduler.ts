@@ -99,6 +99,18 @@ export function systemContext(db: Db, audit: AuditService, tenantId: string): Re
 
 export type JobRunner = (ctx: RequestContext) => Promise<number> | number;
 
+/**
+ * Pekerjaan yang berjalan SEKALI, bukan sekali per tenant.
+ *
+ * Diperlukan karena pemeliharaan tingkat platform tidak dapat dijalankan per tenant:
+ * sebagian baris yang harus dipangkas sengaja tidak punya tenant — `login_attempts`
+ * untuk alamat email yang tidak terdaftar bertenant NULL, justru supaya ia tidak
+ * memberi tahu tenant mana yang memiliki alamat itu. Menjalankannya di dalam loop
+ * tenant akan meninggalkan baris-baris itu tumbuh selamanya, dan sekaligus mengulang
+ * pekerjaan yang sama sebanyak jumlah tenant.
+ */
+export type GlobalJobRunner = (db: Db) => Promise<number> | number;
+
 export class Scheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -106,6 +118,7 @@ export class Scheduler {
     private readonly db: Db,
     private readonly audit: AuditService,
     private readonly jobs: Record<string, JobRunner>,
+    private readonly globalJobs: Record<string, GlobalJobRunner> = {},
   ) {}
 
   /** Tenant yang aktif. Tenant disuspensi tidak dijadwalkan apa pun. */
@@ -182,6 +195,26 @@ export class Scheduler {
 
       this.finish(job, failures.length === 0 ? 'ok' : 'partial', { actions, processed, failures });
       results.push({ job, tenantsProcessed: processed, actions });
+    }
+
+    for (const [job, runner] of Object.entries(this.globalJobs)) {
+      if (!options.force && !this.claim(job)) {
+        results.push({ job, tenantsProcessed: 0, actions: 0, skipped: 'ran_recently' });
+        continue;
+      }
+      if (options.force) this.claim(job);
+
+      try {
+        const actions = await runner(this.db);
+        this.finish(job, 'ok', { actions });
+        // `tenantsProcessed: 0` bukan kegagalan di sini — pekerjaan global memang tidak
+        // menghitung tenant. Dibedakan lewat nama pekerjaannya, bukan lewat angka ini.
+        results.push({ job, tenantsProcessed: 0, actions });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.finish(job, 'failed', { failures: [message] });
+        results.push({ job, tenantsProcessed: 0, actions: 0, skipped: `failed: ${message}` });
+      }
     }
 
     return results;

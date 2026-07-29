@@ -14,6 +14,7 @@ import { AuditService } from './audit-service/index.ts';
 import { openDatabase, type Db, type DbPaths } from './platform/db.ts';
 import { NotificationOutbox } from './platform/outbox.ts';
 import { Scheduler, SCHEDULER_INTERVAL_MS, type JobRunner } from './platform/scheduler.ts';
+import { pruneExpiredRows, retentionReport } from './platform/retention.ts';
 import { KeyRing } from './platform/crypto.ts';
 import { ValidationError } from './platform/errors.ts';
 import {
@@ -1549,16 +1550,46 @@ export function createApp(options: AppOptions = {}): VantikApp {
   const enforceSubscriptions: JobRunner = (ctx) =>
     new BillingService(ctx, new MeteringService(ctx), outbox).enforceLifecycle().actions;
 
-  const scheduler = new Scheduler(db, audit, {
-    'alerts.sweep': sweepAlerts,
-    'reports.scheduled': dispatchScheduledReports,
-    'subscription.lifecycle': enforceSubscriptions,
-  });
+  const scheduler = new Scheduler(
+    db,
+    audit,
+    {
+      'alerts.sweep': sweepAlerts,
+      'reports.scheduled': dispatchScheduledReports,
+      'subscription.lifecycle': enforceSubscriptions,
+    },
+    {
+      /**
+       * Pemangkasan baris kedaluwarsa.
+       *
+       * Terdaftar sebagai pekerjaan GLOBAL, bukan per tenant: sebagian baris yang harus
+       * dipangkas sengaja tidak punya tenant (percobaan login untuk alamat yang tidak
+       * terdaftar), dan pemangkasan per-tenant akan meninggalkannya tumbuh selamanya.
+       */
+      'retention.prune': (database) => pruneExpiredRows(database).total,
+    },
+  );
 
   api.get('/system/scheduler', (req, res) => {
     const ctx = requireContext(req);
     ctx.require('alert:read', { module: 'Alert Center' });
     res.json({ jobs: scheduler.status(), intervalMs: SCHEDULER_INTERVAL_MS });
+  });
+
+  /**
+   * Laporan pertumbuhan tabel.
+   *
+   * Memuat juga dua tabel yang TIDAK dapat dipangkas — `audit_log` dan `usage_events`
+   * bersifat append-only lewat trigger. Melaporkannya apa adanya lebih berguna daripada
+   * menyembunyikannya: operator shared hosting berkuota disk perlu tahu apa yang tumbuh
+   * tanpa bisa dihentikan, supaya ia merencanakan alih-alih terkejut.
+   *
+   * Butuh `platform:health` — angka ini menyangkut seluruh instalasi, bukan satu tenant.
+   */
+  api.get('/system/retention', (req, res) => {
+    const ctx = requireContext(req);
+    ctx.require('platform:health', { module: 'Manajemen Tenant' });
+    res.json(retentionReport(db));
   });
 
   app.use(errorHandler());

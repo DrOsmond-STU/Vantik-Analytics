@@ -249,8 +249,18 @@ export const AUDIT_MIGRATIONS: readonly Migration[] = [
         BEFORE DELETE ON audit_log
         BEGIN SELECT RAISE(ABORT, 'audit_log is immutable (SECURITY.md Bagian 9)'); END;
 
-      -- Arsip retensi: entri dipindahkan ke sini sebelum dihapus (PRD 6.20 — retensi ≥24 bulan).
-      -- Pemindahan dilakukan proses arsip di luar antarmuka aplikasi.
+      -- Salinan arsip (PRD 6.20 — retensi ≥24 bulan).
+      --
+      -- PERHATIKAN apa yang tabel ini BUKAN: ia bukan "tempat entri dipindahkan sebelum
+      -- dihapus". Trigger di atas menolak DELETE pada audit_log tanpa pengecualian,
+      -- termasuk untuk pemindahan — jadi mengisi tabel ini MENAMBAH ukuran basis data,
+      -- tidak mengurangi. Gunanya adalah menghasilkan salinan berbentuk tunggal yang
+      -- mudah diekspor keluar, bukan mengosongkan tabel sumbernya.
+      --
+      -- Untuk benar-benar membatasi ukuran basis data audit, yang benar adalah ROTASI
+      -- BERKAS per periode (lihat docs/DEPLOY-SHARED-HOSTING.md §9b), bukan menghapus
+      -- baris — sebab menghapus baris menuntut melepas trigger, dan melepas trigger
+      -- menghapus kontrol kekekalan yang justru menjadi alasan basis data ini terpisah.
       CREATE TABLE auditdb.audit_log_archive (
         id              TEXT PRIMARY KEY,
         archived_at     TEXT NOT NULL,

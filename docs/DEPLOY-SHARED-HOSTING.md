@@ -216,6 +216,8 @@ Mengikuti DEPLOYMENT.md Bagian 10 (checklist pra-peluncuran R1) dan SECURITY.md:
       perpanjangan tertunda (blokir masa berlaku sendiri tetap berjalan — lihat 8.1d)
 - [ ] Jangka waktu berlangganan tenant sudah sesuai kontrak (lihat 8.1d) dan tanggal
       berakhirnya tercatat di luar sistem
+- [ ] Jendela pemangkasan tabel ditinjau bila pemakaian berat (lihat 8.4); pertumbuhan
+      berkas audit dipahami tidak dapat dipangkas (lihat 9b)
 - [ ] Antrean notifikasi diperiksa (`GET /api/v1/notifications/outbox`) — selama belum ada
       transport nyata, setiap pesan berstatus `queued` dan perlu disampaikan manual
 
@@ -395,6 +397,46 @@ Untuk mengaktifkan pengiriman nyata, pasang implementasi `NotificationTransport`
 
 ---
 
+## 8.4 Pemangkasan tabel yang terus tumbuh
+
+Beberapa tabel bertambah pada setiap pemakaian dan tidak pernah menyusut sendiri:
+percobaan login, sesi yang kedaluwarsa, tantangan MFA, jejak dasbor tertanam, cache hasil
+analisis, dan pembacaan sensor Digital Twin. Di shared hosting yang berkuota disk, itu
+berarti berkas basis data membengkak karena hal-hal yang sudah tidak menjawab pertanyaan
+siapa pun.
+
+Pekerjaan **`retention.prune`** menanganinya, berjalan bersama penjadwal (8.2). Ia
+**global**, dijalankan sekali per putaran — bukan sekali per tenant — karena sebagian
+baris memang tidak punya tenant: percobaan login untuk alamat email yang tidak terdaftar
+sengaja bertenant kosong supaya ia tidak membocorkan tenant mana yang memiliki alamat itu.
+
+Jendela bawaannya sudah wajar dan tidak perlu diubah. Bila perlu, setel lewat variabel
+lingkungan — satuannya **hari**, dan `0` mematikan pemangkasan tabel itu:
+
+| Variabel | Bawaan | Yang dipangkas |
+|---|---|---|
+| `VANTIK_RETAIN_LOGIN_ATTEMPTS_DAYS` | 90 | Percobaan login |
+| `VANTIK_RETAIN_DEAD_SESSIONS_DAYS` | 30 | Sesi yang **sudah** kedaluwarsa atau dicabut |
+| `VANTIK_RETAIN_MFA_CHALLENGES_DAYS` | 30 | Tantangan MFA yang sudah dipakai/kedaluwarsa |
+| `VANTIK_RETAIN_PASSWORD_RESETS_DAYS` | 30 | Permintaan reset kata sandi yang sudah selesai |
+| `VANTIK_RETAIN_EMBED_REQUESTS_DAYS` | 365 | Jejak permintaan dasbor tertanam |
+| `VANTIK_RETAIN_SENSOR_READINGS_DAYS` | 90 | Pembacaan sensor Digital Twin |
+| `VANTIK_RETAIN_SENT_NOTIFICATIONS_DAYS` | 30 | Pesan outbox yang **berhasil terkirim** |
+| `VANTIK_RETAIN_ANALYSIS_CACHE_DAYS` | 30 | Cache hasil analisis statistik |
+| `VANTIK_RETAIN_SCHEDULER_RUNS_DAYS` | 30 | Jejak eksekusi penjadwal |
+
+Tiga hal yang **tidak** akan dipangkas, dan itu disengaja:
+
+- **Sesi yang masih hidup** tidak pernah dihapus, betapa pun tuanya. Mengeluarkan orang
+  dari aplikasi demi ruang disk adalah kerusakan, bukan perawatan.
+- **Pesan outbox berstatus `queued` atau `failed`** tidak pernah dibuang. Selama transport
+  email belum dipasang (8.3), antrean itu satu-satunya tempat kode pemulihan kata sandi dan
+  OTP dapat dibaca operator — membuangnya berarti menghapus satu-satunya salinannya.
+- **`audit_log` dan `usage_events`** — lihat 9b.
+
+Lihat apa yang tumbuh, beserta jendela yang sedang berlaku, di
+`GET /api/v1/system/retention` (butuh izin `platform:health`).
+
 ## 9. Backup
 
 Seluruh keadaan aplikasi ada di tiga berkas dalam `~/vantik-data/`:
@@ -423,6 +465,46 @@ Bila `sqlite3` CLI tidak tersedia di hosting, hentikan aplikasi sesaat
 > tetapi **jangan di tempat yang sama**, karena itu menghilangkan gunanya enkripsi.
 
 ---
+
+### 9b. Log Aktivitas: rotasi berkas, bukan penghapusan baris
+
+`vantik-audit.db` **tidak dapat dipangkas.** Tabelnya dijaga trigger SQLite yang
+membatalkan setiap `UPDATE` dan `DELETE` — termasuk dari Super Admin, termasuk untuk
+keperluan pengarsipan (SECURITY.md Bagian 9). Itu bukan kekurangan yang perlu ditambal;
+itu justru alasan basis data ini dipisahkan.
+
+Konsekuensinya jujur: **berkas audit tumbuh selamanya.** Pada pemakaian internal
+pertumbuhannya lambat — beberapa MB per tahun untuk puluhan pengguna — tetapi ia tidak
+pernah berhenti. Periksa angkanya di `GET /api/v1/system/retention`, bagian `appendOnly`.
+
+Bila suatu saat ukurannya menjadi masalah, yang benar adalah **merotasikan berkasnya**,
+bukan menghapus barisnya:
+
+```bash
+# 1. Hentikan aplikasi: Setup Node.js App → Stop
+cd ~/vantik-data
+
+# 2. Simpan berkas audit sekarang sebagai arsip bertanggal, beserta -wal/-shm
+for ext in "" "-wal" "-shm"; do
+  [ -f "vantik-audit.db$ext" ] && mv "vantik-audit.db$ext" "vantik-audit-$(date +%Y%m)-arsip.db$ext"
+done
+
+# 3. Nyalakan kembali: Setup Node.js App → Start
+#    Aplikasi membuat vantik-audit.db baru dan melanjutkan pencatatan.
+```
+
+Yang perlu Anda ketahui sebelum melakukannya:
+
+- **Tidak ada yang hilang.** Berkas arsip tetap utuh dan tetap kekal. Simpan ia bersama
+  backup Anda; ia dapat dibuka kapan pun dengan `sqlite3` bila auditor memintanya.
+- **Log Aktivitas di aplikasi hanya menampilkan berkas yang aktif.** Setelah rotasi,
+  riwayat sebelum tanggal rotasi tidak lagi muncul di antarmuka — ia ada di berkas arsip.
+  Itu cara kerja rotasi log pada umumnya, dan lebih baik daripada melemahkan kekekalannya.
+- **Catat tanggal rotasinya** di luar sistem, supaya jelas berkas mana memuat periode mana.
+
+> Ada tabel `audit_log_archive` di dalam basis data audit. Ia **menyalin**, bukan
+> memindahkan — mengisinya justru MENAMBAH ukuran berkas. Gunanya menghasilkan salinan
+> berbentuk tunggal yang mudah diekspor keluar, bukan mengosongkan tabel sumbernya.
 
 ## 10. Memperbarui ke versi baru
 

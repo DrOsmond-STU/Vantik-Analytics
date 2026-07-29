@@ -264,9 +264,16 @@ export class AuditService {
   }
 
   /**
-   * Pengarsipan sebelum penghapusan (PRD 6.20 — retensi ≥24 bulan, dapat diarsipkan).
-   * Dijalankan proses pemeliharaan, bukan lewat antarmuka aplikasi; tetap tidak dapat
-   * menghapus dari `audit_log` karena trigger menolak DELETE.
+   * Menyalin entri lama ke tabel arsip (PRD 6.20 — retensi ≥24 bulan).
+   *
+   * **Ini TIDAK mengurangi ukuran basis data — ia menambahnya.** Trigger pada `audit_log`
+   * menolak DELETE tanpa pengecualian, jadi "pindahkan lalu hapus" mustahil; yang terjadi
+   * di sini murni penyalinan. Menyebutnya "pengarsipan" tanpa catatan ini akan membuat
+   * operator yang mengejar ruang disk menjalankannya dan mendapat hasil sebaliknya.
+   *
+   * Gunanya yang sah: menghasilkan salinan berbentuk tunggal (`payload_json`) yang mudah
+   * diekspor ke luar sistem. Untuk benar-benar membatasi ukuran, rotasikan berkas basis
+   * data audit per periode — lihat docs/DEPLOY-SHARED-HOSTING.md §9b.
    */
   archiveOlderThan(cutoffIso: string): number {
     const rows = this.db
