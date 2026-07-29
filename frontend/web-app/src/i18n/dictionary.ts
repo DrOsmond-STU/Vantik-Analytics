@@ -293,6 +293,18 @@ export const dictionary = {
     'Ruang kerja dalam mode baca-saja. Selesaikan pembayaran untuk mengaktifkan kembali.',
     'Workspace is in read-only mode. Settle payment to restore full access.',
   ],
+  'error.subscription_expired': [
+    'Masa berlaku langganan sudah habis. Data Anda tetap dapat dilihat dan diunduh, tetapi perubahan dihentikan.',
+    'Your subscription has expired. Your data stays readable and downloadable, but changes are on hold.',
+  ],
+  'error.billing_cycle_unknown': [
+    'Jangka waktu berlangganan tidak dikenali.',
+    'That subscription term is not recognised.',
+  ],
+  'recovery.renew_subscription': [
+    'Buka Manajemen Langganan & Paket, lalu perpanjang untuk membuka kembali penulisan.',
+    'Open Subscription Management and renew to restore write access.',
+  ],
   'error.quota_exceeded': ['Kuota paket terlampaui.', 'Plan quota exceeded.'],
   'error.rate_limited': ['Terlalu banyak permintaan. Coba lagi sebentar lagi.', 'Too many requests. Try again shortly.'],
   'error.dq_below_threshold': [
@@ -832,9 +844,33 @@ export const dictionary = {
     'Your workspace starts immediately in trial mode. You become its first administrator.',
   ],
   'ui.signup_plan': ['Paket', 'Plan'],
-  'ui.signup_cycle': ['Siklus penagihan', 'Billing cycle'],
-  'ui.cycle_monthly': ['Bulanan', 'Monthly'],
-  'ui.cycle_annual': ['Tahunan', 'Annual'],
+  'ui.signup_cycle': ['Jangka waktu berlangganan', 'Subscription term'],
+  'ui.signup_cycle_hint': [
+    'Semakin panjang jangka waktunya, semakin murah biaya per bulannya.',
+    'The longer the term, the lower the monthly cost.',
+  ],
+  'ui.cycle_monthly': ['1 bulan', '1 month'],
+  'ui.cycle_quarterly': ['3 bulan', '3 months'],
+  'ui.cycle_semiannual': ['6 bulan', '6 months'],
+  'ui.cycle_annual': ['12 bulan', '12 months'],
+  'ui.cycle_save': ['hemat {percent}%', 'save {percent}%'],
+  'ui.per_cycle': ['/{cycle}', '/{cycle}'],
+  'ui.plan_per_month_equivalent': ['Setara {price} per bulan', 'Equivalent to {price} per month'],
+  'ui.subscription_days_left': ['{days} hari lagi', '{days} days left'],
+  'ui.subscription_expired_days': ['Lewat {days} hari', '{days} days overdue'],
+  'ui.subscription_expiring_soon': [
+    'Masa berlaku berakhir dalam {days} hari. Perpanjang sebelum tanggal itu agar ruang kerja tidak beralih ke mode baca-saja.',
+    'Your term ends in {days} days. Renew before then to keep the workspace out of read-only mode.',
+  ],
+  'ui.subscription_renew_hint': [
+    'Perpanjang untuk membuka kembali penulisan. Data Anda tetap utuh selama masa ini.',
+    'Renew to restore write access. Your data stays intact throughout.',
+  ],
+  'action.renew_for': ['Perpanjang {cycle} — {price}', 'Renew {cycle} — {price}'],
+  'ui.signup_summary': [
+    'Setelah uji coba berakhir: {plan}, {price} per {cycle}. Dapat diubah atau dihentikan kapan saja.',
+    'After the trial ends: {plan}, {price} per {cycle}. Change or cancel any time.',
+  ],
   'ui.signup_org': ['Nama organisasi', 'Organisation name'],
   'ui.signup_slug': ['Alamat ruang kerja', 'Workspace address'],
   'ui.signup_slug_hint': [

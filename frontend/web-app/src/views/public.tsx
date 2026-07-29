@@ -8,7 +8,14 @@
  */
 import { useEffect, useState } from 'react';
 import { useApp } from '../app/AppContext.tsx';
-import { api, ApiError, type PublicPlan, type PublicPlans } from '../lib/api.ts';
+import {
+  api,
+  ApiError,
+  type BillingCycle,
+  type BillingCycleOption,
+  type PublicPlan,
+  type PublicPlans,
+} from '../lib/api.ts';
 import { Card, Field } from '../components/primitives.tsx';
 import { NAV_GROUPS } from '../app/navigation.ts';
 
@@ -46,6 +53,39 @@ function formatPrice(value: number, locale: string): string {
 
 function quotaLabel(value: number, locale: string): string {
   return value < 0 ? (locale === 'id' ? 'Tanpa batas' : 'Unlimited') : new Intl.NumberFormat().format(value);
+}
+
+/** Kunci kamus untuk nama siklus; dipetakan sekali supaya tidak tersebar di beberapa berkas. */
+export const CYCLE_LABEL_KEY: Record<BillingCycle, string> = {
+  monthly: 'ui.cycle_monthly',
+  quarterly: 'ui.cycle_quarterly',
+  semiannual: 'ui.cycle_semiannual',
+  annual: 'ui.cycle_annual',
+};
+
+/**
+ * Daftar siklus yang dipakai antarmuka.
+ *
+ * Server-lah sumbernya; daftar bawaan ini hanya dipakai bila katalog gagal dimuat,
+ * supaya formulir pendaftaran tetap dapat dipakai alih-alih menampilkan pemilih kosong.
+ */
+export const FALLBACK_CYCLES: BillingCycleOption[] = [
+  { code: 'monthly', months: 1, discount: 0, sortOrder: 1 },
+  { code: 'quarterly', months: 3, discount: 0.05, sortOrder: 2 },
+  { code: 'semiannual', months: 6, discount: 0.1, sortOrder: 3 },
+  { code: 'annual', months: 12, discount: 1 / 6, sortOrder: 4 },
+];
+
+/**
+ * Harga satu paket untuk satu siklus.
+ *
+ * Angkanya diambil apa adanya dari server. Kalau medan `prices` tidak ada (server lama),
+ * yang ditampilkan adalah harga bulanan × jumlah bulan TANPA diskon — sengaja tidak
+ * menebak diskon, karena menebak terlalu rendah berarti memajang harga yang tidak akan
+ * ditagihkan.
+ */
+export function priceForCycle(plan: PublicPlan, cycle: BillingCycle, months: number): number {
+  return plan.prices?.[cycle] ?? plan.monthlyPrice * months;
 }
 
 /* ================= Kerangka halaman publik ================= */
@@ -91,6 +131,7 @@ function PublicShell({ children }: { children: React.ReactNode }): JSX.Element {
 export function LandingView(): JSX.Element {
   const { t, locale } = useApp();
   const [catalog, setCatalog] = useState<PublicPlans | null>(null);
+  const [cycle, setCycle] = useState<BillingCycle>('monthly');
 
   useEffect(() => {
     // Kegagalan memuat katalog TIDAK mengosongkan halaman: penjelasan produk tetap
@@ -164,28 +205,90 @@ export function LandingView(): JSX.Element {
         {catalog === null ? (
           <p className="section-sub">{t('ui.loading')}</p>
         ) : (
-          <div className="plan-grid">
-            {[...catalog.plans].sort((a, b) => a.sortOrder - b.sortOrder).map((plan) => (
-              <PlanCard key={plan.code} plan={plan} locale={locale} signupEnabled={catalog.signupEnabled} />
-            ))}
-          </div>
+          <>
+            {/* Pemilih siklus berada DI ATAS kartu, bukan di dalam masing-masing kartu:
+                pengunjung membandingkan paket pada jangka waktu yang sama, bukan
+                membaca empat angka per kartu dan menghitung sendiri. */}
+            <CycleSwitch
+              cycles={catalog.cycles ?? FALLBACK_CYCLES}
+              value={cycle}
+              onChange={setCycle}
+            />
+            <div className="plan-grid">
+              {[...catalog.plans].sort((a, b) => a.sortOrder - b.sortOrder).map((plan) => (
+                <PlanCard
+                  key={plan.code}
+                  plan={plan}
+                  locale={locale}
+                  cycle={(catalog.cycles ?? FALLBACK_CYCLES).find((c) => c.code === cycle) ?? FALLBACK_CYCLES[0]!}
+                  signupEnabled={catalog.signupEnabled}
+                />
+              ))}
+            </div>
+          </>
         )}
       </section>
     </PublicShell>
   );
 }
 
-function PlanCard({ plan, locale, signupEnabled }: { plan: PublicPlan; locale: string; signupEnabled: boolean }): JSX.Element {
+/** Tombol-tombol jangka waktu berlangganan: 1, 3, 6, atau 12 bulan. */
+export function CycleSwitch({
+  cycles,
+  value,
+  onChange,
+}: {
+  cycles: BillingCycleOption[];
+  value: BillingCycle;
+  onChange: (cycle: BillingCycle) => void;
+}): JSX.Element {
   const { t } = useApp();
+  return (
+    <div className="cycle-switch" role="group" aria-label={t('ui.signup_cycle')}>
+      {[...cycles]
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((option) => (
+          <button
+            key={option.code}
+            type="button"
+            className={`cycle-option${option.code === value ? ' is-active' : ''}`}
+            aria-pressed={option.code === value}
+            onClick={() => onChange(option.code)}
+          >
+            {t(CYCLE_LABEL_KEY[option.code])}
+            {option.discount > 0 && (
+              <span className="cycle-save">{t('ui.cycle_save', { percent: Math.round(option.discount * 100) })}</span>
+            )}
+          </button>
+        ))}
+    </div>
+  );
+}
+
+function PlanCard({
+  plan,
+  locale,
+  cycle,
+  signupEnabled,
+}: {
+  plan: PublicPlan;
+  locale: string;
+  cycle: BillingCycleOption;
+  signupEnabled: boolean;
+}): JSX.Element {
+  const { t } = useApp();
+  const price = priceForCycle(plan, cycle.code, cycle.months);
   return (
     <Card className="plan-card">
       <div className="plan-name">{plan.name}</div>
       <div className="plan-price">
-        {formatPrice(plan.monthlyPrice, locale)}
-        {plan.monthlyPrice > 0 && <span className="per">{t('ui.per_month')}</span>}
+        {formatPrice(price, locale)}
+        {price > 0 && <span className="per">{t('ui.per_cycle', { cycle: t(CYCLE_LABEL_KEY[cycle.code]) })}</span>}
       </div>
-      {plan.annualPrice > 0 && (
-        <div className="plan-annual">{t('ui.plan_annual', { price: formatPrice(plan.annualPrice, locale) })}</div>
+      {price > 0 && cycle.months > 1 && (
+        <div className="plan-annual">
+          {t('ui.plan_per_month_equivalent', { price: formatPrice(Math.round(price / cycle.months), locale) })}
+        </div>
       )}
       <ul className="plan-features">
         <li>{t('ui.plan_modules', { count: plan.moduleCount })}</li>
@@ -219,7 +322,7 @@ export function SignupView(): JSX.Element {
   const { t, locale } = useApp();
   const [catalog, setCatalog] = useState<PublicPlans | null>(null);
   const [plan, setPlan] = useState('professional');
-  const [cycle, setCycle] = useState<'monthly' | 'annual'>('monthly');
+  const [cycle, setCycle] = useState<BillingCycle>('monthly');
   const [organisation, setOrganisation] = useState('');
   const [slugEdited, setSlugEdited] = useState(false);
   const [slug, setSlug] = useState('');
@@ -233,6 +336,10 @@ export function SignupView(): JSX.Element {
   useEffect(() => {
     api.plans().then(setCatalog).catch(() => setCatalog(null));
   }, []);
+
+  const cycleOptions = [...(catalog?.cycles ?? FALLBACK_CYCLES)].sort((a, b) => a.sortOrder - b.sortOrder);
+  const cycleOption = cycleOptions.find((c) => c.code === cycle) ?? FALLBACK_CYCLES[0]!;
+  const selectedPlan = catalog?.plans.find((p) => p.code === plan) ?? null;
 
   function onOrganisation(value: string): void {
     setOrganisation(value);
@@ -294,18 +401,34 @@ export function SignupView(): JSX.Element {
                 <select value={plan} onChange={(e) => setPlan(e.target.value)}>
                   {(catalog?.plans ?? []).map((p) => (
                     <option key={p.code} value={p.code}>
-                      {p.name} — {formatPrice(p.monthlyPrice, locale)}
-                      {p.monthlyPrice > 0 ? t('ui.per_month') : ''}
+                      {p.name} — {formatPrice(priceForCycle(p, cycle, cycleOption.months), locale)}
+                      {p.monthlyPrice > 0 ? ` / ${t(CYCLE_LABEL_KEY[cycle])}` : ''}
                     </option>
                   ))}
                 </select>
               </Field>
-              <Field label={t('ui.signup_cycle')}>
-                <select value={cycle} onChange={(e) => setCycle(e.target.value === 'annual' ? 'annual' : 'monthly')}>
-                  <option value="monthly">{t('ui.cycle_monthly')}</option>
-                  <option value="annual">{t('ui.cycle_annual')}</option>
+              <Field label={t('ui.signup_cycle')} hint={t('ui.signup_cycle_hint')}>
+                <select value={cycle} onChange={(e) => setCycle(e.target.value as BillingCycle)}>
+                  {cycleOptions.map((option) => (
+                    <option key={option.code} value={option.code}>
+                      {t(CYCLE_LABEL_KEY[option.code])}
+                      {option.discount > 0 ? ` — ${t('ui.cycle_save', { percent: Math.round(option.discount * 100) })}` : ''}
+                    </option>
+                  ))}
                 </select>
               </Field>
+
+              {/* Yang akan ditagihkan setelah uji coba, dinyatakan sebelum orang mengisi
+                  data diri — bukan kejutan di layar terakhir. */}
+              {selectedPlan && (
+                <div className="note" data-testid="signup-summary" style={{ marginBottom: 14 }}>
+                  {t('ui.signup_summary', {
+                    plan: selectedPlan.name,
+                    price: formatPrice(priceForCycle(selectedPlan, cycle, cycleOption.months), locale),
+                    cycle: t(CYCLE_LABEL_KEY[cycle]),
+                  })}
+                </div>
+              )}
               <Field label={t('ui.signup_org')}>
                 <input value={organisation} onChange={(e) => onOrganisation(e.target.value)} autoComplete="organization" required />
               </Field>

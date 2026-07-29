@@ -161,7 +161,18 @@ export default function App(): JSX.Element {
         </div>
 
         <div className="content">
-          {session.flags.readOnly && <div className="note warn" style={{ marginBottom: 16 }}>{t('ui.read_only_banner')}</div>}
+          {/* Masa berlaku habis diberi spanduknya sendiri: penyebabnya berbeda dari
+              tunggakan, dan langkah pemulihannya ada di layar pengguna — bukan sesuatu
+              yang harus ia tanyakan ke dukungan. */}
+          {session.flags.readOnly &&
+            (session.flags.readOnlyReason === 'subscription_expired' ? (
+              <div className="note warn" style={{ marginBottom: 16 }}>
+                <div>{t('error.subscription_expired')}</div>
+                <div style={{ marginTop: 6 }}>{t('recovery.renew_subscription')}</div>
+              </div>
+            ) : (
+              <div className="note warn" style={{ marginBottom: 16 }}>{t('ui.read_only_banner')}</div>
+            ))}
           {enabled ? <ViewComponent /> : <div className="grid g-12"><ModuleLocked /></div>}
         </div>
       </div>

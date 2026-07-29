@@ -83,7 +83,9 @@ describe('Katalog paket publik', () => {
     const payload = JSON.stringify(response.body);
     expect(payload).not.toContain('rahasiaorg');
     expect(payload).not.toContain('tenant_id');
-    expect(Object.keys(response.body).sort()).toEqual(['currency', 'plans', 'signupEnabled']);
+    // Daftar ini sengaja TERTUTUP: menambah medan di sini menuntut keputusan sadar
+    // bahwa medan itu memang boleh dilihat siapa saja di internet.
+    expect(Object.keys(response.body).sort()).toEqual(['currency', 'cycles', 'plans', 'signupEnabled']);
   });
 
   it('TC-PUB-03 — katalog menyatakan apakah pendaftaran mandiri dibuka', async () => {

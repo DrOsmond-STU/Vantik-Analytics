@@ -118,3 +118,26 @@ export function newId(prefix: string): string {
 export function nowIso(): string {
   return new Date().toISOString();
 }
+
+/**
+ * Menambah sejumlah bulan kalender pada sebuah waktu ISO.
+ *
+ * Tidak memakai `hari × 30` karena siklus langganan dijual dalam BULAN, bukan dalam
+ * 30 hari: pelanggan yang berlangganan 31 Januari untuk satu bulan harus jatuh tempo
+ * 28 Februari, bukan 2 Maret. `Date.setUTCMonth` sendiri melimpah pada kasus itu
+ * (31 Januari + 1 bulan menjadi 3 Maret pada tahun biasa), jadi tanggalnya dijepit ke
+ * hari terakhir bulan tujuan — itulah satu-satunya alasan fungsi ini ada alih-alih
+ * memanggil `setUTCMonth` langsung di tempat pemakaian.
+ */
+export function addMonths(fromIso: string, months: number): string {
+  const from = new Date(fromIso);
+  const day = from.getUTCDate();
+  const target = new Date(from.getTime());
+  target.setUTCDate(1);
+  target.setUTCMonth(target.getUTCMonth() + months);
+  const lastDayOfTargetMonth = new Date(
+    Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  target.setUTCDate(Math.min(day, lastDayOfTargetMonth));
+  return target.toISOString();
+}

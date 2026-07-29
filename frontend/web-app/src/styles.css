@@ -1402,6 +1402,43 @@ td.num {
 .plan-features { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-600); }
 .plan-features li { margin-bottom: 4px; }
 
+/* Pemilih jangka waktu berlangganan (1 / 3 / 6 / 12 bulan). */
+.cycle-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+.cycle-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-600);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.cycle-option:hover { border-color: var(--accent); }
+.cycle-option.is-active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.cycle-save {
+  font-size: 11.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--ok-bg, rgba(16, 148, 96, 0.12));
+  color: var(--ok, #109460);
+}
+.cycle-option.is-active .cycle-save { background: rgba(255, 255, 255, 0.22); color: #fff; }
+
 .public-form {
   flex: 1;
   display: grid;

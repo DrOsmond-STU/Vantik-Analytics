@@ -1375,12 +1375,58 @@ export function TenantView(): JSX.Element {
 
 /* ================= Langganan & Paket — PRD 6.27 ================= */
 
+interface SubscriptionPayload {
+  subscription: {
+    plan_code: string;
+    plan_name: string;
+    billing_cycle: string;
+    cycle_months: number;
+    status: string;
+    trial_ends_at: string | null;
+    current_period_end: string;
+    pending_plan_code: string | null;
+    expires_at: string;
+    days_remaining: number;
+    expired: boolean;
+    price: number;
+    quotas: Record<string, number>;
+  };
+  plans: Array<{ code: string; name: string; monthlyPrice: number; annualPrice: number; quotas: Record<string, number> }>;
+  cycles: Array<{ code: string; months: number; discount: number; sortOrder: number }>;
+}
+
 export function SubscriptionView(): JSX.Element {
-  const { t, locale } = useApp();
-  const state = useAsync(() => api.get<{
-    subscription: { plan_code: string; plan_name: string; billing_cycle: string; status: string; trial_ends_at: string | null; current_period_end: string; pending_plan_code: string | null; quotas: Record<string, number> };
-    plans: Array<{ code: string; name: string; monthlyPrice: number; annualPrice: number; quotas: Record<string, number> }>;
-  }>('/subscription'), []);
+  const { t, locale, refreshSession } = useApp();
+  const [nonce, setNonce] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [noticeKey, setNoticeKey] = useState<string | null>(null);
+  const state = useAsync(() => api.get<SubscriptionPayload>('/subscription'), [nonce]);
+
+  /**
+   * Perpanjangan.
+   *
+   * Token pembayaran di sini adalah rujukan dari payment gateway — data kartu tidak
+   * pernah melewati sistem ini (SECURITY.md 16.3). Selama gateway belum dipasang,
+   * operator memakai rujukan transfer manual.
+   */
+  async function renew(): Promise<void> {
+    setBusy(true);
+    setNoticeKey(null);
+    try {
+      await api.post('/subscription/renew', {
+        paymentToken: `manual-${Date.now().toString(36)}`,
+        paymentMethodLabel: locale === 'id' ? 'Transfer manual' : 'Manual transfer',
+      });
+      setNonce((n) => n + 1);
+      // Sesi memuat `flags.readOnly`; tanpa memuat ulang, aplikasi masih menganggap
+      // ruang kerja terkunci sampai pengguna menyegarkan halaman sendiri.
+      await refreshSession();
+    } catch (error) {
+      setNoticeKey(error instanceof ApiError ? error.key : 'error.internal');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="view-enter">
@@ -1391,10 +1437,50 @@ export function SubscriptionView(): JSX.Element {
             <Panel title={locale === 'id' ? 'Paket Aktif' : 'Active Plan'} span="wide">
               <div className="stat-grid">
                 <StatTile label={t('ui.plan_label')} value={data.subscription.plan_name} />
-                <StatTile label={locale === 'id' ? 'Siklus' : 'Cycle'} value={data.subscription.billing_cycle} />
-                <StatTile label={t('table.status')} value={data.subscription.status} />
-                <StatTile label={locale === 'id' ? 'Perpanjangan' : 'Renews'} value={formatDate(data.subscription.current_period_end, locale)} />
+                <StatTile
+                  label={locale === 'id' ? 'Jangka waktu' : 'Term'}
+                  value={t(`ui.cycle_${data.subscription.billing_cycle}`)}
+                />
+                <StatTile
+                  label={locale === 'id' ? 'Berlaku sampai' : 'Valid until'}
+                  value={formatDate(data.subscription.expires_at, locale)}
+                />
+                <StatTile
+                  label={locale === 'id' ? 'Sisa waktu' : 'Time left'}
+                  value={
+                    data.subscription.expired
+                      ? t('ui.subscription_expired_days', { days: Math.abs(data.subscription.days_remaining) })
+                      : t('ui.subscription_days_left', { days: data.subscription.days_remaining })
+                  }
+                />
               </div>
+
+              {/* Keadaan yang paling perlu dijelaskan, dijelaskan paling jelas: apa yang
+                  terjadi sekarang, dan apa yang membukanya kembali. */}
+              {data.subscription.expired ? (
+                <div className="note warn" style={{ marginTop: 12 }}>
+                  <div>{t('error.subscription_expired')}</div>
+                  <div style={{ marginTop: 6 }}>{t('ui.subscription_renew_hint')}</div>
+                </div>
+              ) : data.subscription.days_remaining <= 7 ? (
+                <div className="note info" style={{ marginTop: 12 }}>
+                  {t('ui.subscription_expiring_soon', { days: data.subscription.days_remaining })}
+                </div>
+              ) : null}
+
+              {noticeKey && <div className="note warn" style={{ marginTop: 12 }}>{t(noticeKey)}</div>}
+
+              <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" className="btn primary" disabled={busy} onClick={() => void renew()}>
+                  {busy
+                    ? t('ui.loading')
+                    : t('action.renew_for', {
+                        cycle: t(`ui.cycle_${data.subscription.billing_cycle}`),
+                        price: formatCurrency(data.subscription.price, locale),
+                      })}
+                </button>
+              </div>
+
               {data.subscription.pending_plan_code && (
                 <div className="note info" style={{ marginTop: 12 }}>
                   {locale === 'id' ? 'Perubahan paket berlaku pada siklus berikutnya: ' : 'Plan change takes effect next cycle: '}

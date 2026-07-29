@@ -10,7 +10,7 @@ import type { AuditService } from '../audit-service/index.ts';
 import { newId, nowIso, type Db } from '../platform/db.ts';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../platform/errors.ts';
 import { hashPassword, validatePasswordPolicy } from '../platform/crypto.ts';
-import { PLAN_BY_CODE, PLAN_CATALOG } from '../platform/featureFlags.ts';
+import { PLAN_BY_CODE, PLAN_CATALOG, isBillingCycle, type BillingCycle } from '../platform/featureFlags.ts';
 import type { RequestContext } from '../platform/context.ts';
 import { PlatformOperatorDb } from '../platform/tenancy.ts';
 import { seedStandardRoles } from '../identity-service/index.ts';
@@ -19,7 +19,7 @@ export interface ProvisionInput {
   name: string;
   slug: string;
   planCode: string;
-  billingCycle: 'monthly' | 'annual';
+  billingCycle: BillingCycle;
   trialDays?: number;
   admin: { fullName: string; nik: string; email: string; password: string; division?: string; position?: string };
   isolationLevel?: 'shared_schema' | 'separate_schema' | 'separate_db';
@@ -85,6 +85,12 @@ export class TenantService {
     }
     if (!PLAN_BY_CODE.has(input.planCode)) {
       throw new ValidationError('error.plan_unknown', { plan: input.planCode });
+    }
+    // Siklus divalidasi DI SINI, bukan hanya di rute HTTP: provisioning juga dipanggil
+    // dari seed dan dari alat operator, dan siklus yang tidak dikenal akan tersimpan
+    // sebagai masa berlaku satu bulan tanpa ada yang menyadarinya.
+    if (!isBillingCycle(input.billingCycle)) {
+      throw new ValidationError('error.billing_cycle_unknown', { cycle: input.billingCycle });
     }
     const policy = validatePasswordPolicy(input.admin.password);
     if (!policy.ok) throw new ValidationError(policy.reasonKey!);

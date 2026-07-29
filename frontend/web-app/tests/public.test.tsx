@@ -17,7 +17,13 @@ import {
   publicRouteFromHash,
   slugify,
 } from '../src/views/public.tsx';
-import { ApiError, api, type PublicPlans } from '../src/lib/api.ts';
+import {
+  ApiError,
+  api,
+  type BillingCycle,
+  type BillingCycleOption,
+  type PublicPlans,
+} from '../src/lib/api.ts';
 import { translate } from '../src/i18n/dictionary.ts';
 
 function id(key: string): string {
@@ -26,13 +32,31 @@ function id(key: string): string {
   return text;
 }
 
+/** Harga per siklus datang dari server; di sini nilainya dipalsukan apa adanya. */
+function harga(bulanan: number): Record<BillingCycle, number> {
+  return {
+    monthly: bulanan,
+    quarterly: Math.round(bulanan * 3 * 0.95),
+    semiannual: Math.round(bulanan * 6 * 0.9),
+    annual: bulanan * 10,
+  };
+}
+
+const SIKLUS: BillingCycleOption[] = [
+  { code: 'monthly', months: 1, discount: 0, sortOrder: 1 },
+  { code: 'quarterly', months: 3, discount: 0.05, sortOrder: 2 },
+  { code: 'semiannual', months: 6, discount: 0.1, sortOrder: 3 },
+  { code: 'annual', months: 12, discount: 1 / 6, sortOrder: 4 },
+];
+
 const KATALOG: PublicPlans = {
   currency: 'IDR',
   signupEnabled: true,
+  cycles: SIKLUS,
   plans: [
-    { code: 'starter', name: 'Starter', monthlyPrice: 0, annualPrice: 0, moduleCount: 12, quotas: { users: 10, datasets: 25, ai_calls_monthly: 0 }, sortOrder: 1 },
-    { code: 'professional', name: 'Professional', monthlyPrice: 4_500_000, annualPrice: 45_000_000, moduleCount: 26, quotas: { users: 50, datasets: 200, ai_calls_monthly: 5000 }, sortOrder: 2 },
-    { code: 'enterprise', name: 'Enterprise', monthlyPrice: 12_000_000, annualPrice: 120_000_000, moduleCount: 30, quotas: { users: -1, datasets: -1, ai_calls_monthly: 100_000 }, sortOrder: 3 },
+    { code: 'starter', name: 'Starter', monthlyPrice: 0, annualPrice: 0, prices: harga(0), moduleCount: 12, quotas: { users: 10, datasets: 25, ai_calls_monthly: 0 }, sortOrder: 1 },
+    { code: 'professional', name: 'Professional', monthlyPrice: 4_500_000, annualPrice: 45_000_000, prices: harga(4_500_000), moduleCount: 26, quotas: { users: 50, datasets: 200, ai_calls_monthly: 5000 }, sortOrder: 2 },
+    { code: 'enterprise', name: 'Enterprise', monthlyPrice: 12_000_000, annualPrice: 120_000_000, prices: harga(12_000_000), moduleCount: 30, quotas: { users: -1, datasets: -1, ai_calls_monthly: 100_000 }, sortOrder: 3 },
   ],
 };
 
@@ -176,6 +200,92 @@ describe('Berlangganan', () => {
 
     await waitFor(() => expect(screen.getByText(id('error.signup_disabled'))).toBeTruthy());
     expect(screen.queryByLabelText(id('ui.signup_org'))).toBeNull();
+  });
+
+  it('TC-WEB-42 — keempat jangka waktu dapat dipilih di formulir pendaftaran', async () => {
+    pasang(<SignupView />);
+    const pemilih = (await screen.findByLabelText(id('ui.signup_cycle'))) as HTMLSelectElement;
+
+    expect([...pemilih.options].map((o) => o.value)).toEqual([
+      'monthly',
+      'quarterly',
+      'semiannual',
+      'annual',
+    ]);
+  });
+
+  it('TC-WEB-43 — jangka waktu yang dipilih ikut terkirim ke server', async () => {
+    vi.mocked(api.signup).mockResolvedValue({ slug: 'enambulan' });
+    pasang(<SignupView />);
+    await waitFor(() => screen.getByLabelText(id('ui.signup_org')));
+
+    fireEvent.change(screen.getByLabelText(id('ui.signup_cycle')), { target: { value: 'semiannual' } });
+    fireEvent.change(screen.getByLabelText(id('ui.signup_org')), { target: { value: 'Enam Bulan' } });
+    fireEvent.change(screen.getByLabelText(id('ui.signup_name')), { target: { value: 'Budi' } });
+    fireEvent.change(screen.getByLabelText(id('ui.login_email')), { target: { value: 'budi@enam.id' } });
+    fireEvent.change(screen.getByLabelText(id('ui.login_password')), { target: { value: 'SandiKuat#2026' } });
+    fireEvent.click(screen.getByRole('button', { name: id('action.subscribe') }));
+
+    // Jangka waktu yang dipilih pengguna harus benar-benar sampai — bukan hanya berubah
+    // di layar lalu terkirim sebagai bulanan.
+    await waitFor(() => expect(vi.mocked(api.signup)).toHaveBeenCalled());
+    expect(vi.mocked(api.signup).mock.calls[0]![0]!.billingCycle).toBe('semiannual');
+  });
+
+  it('TC-WEB-44 — biaya setelah uji coba dinyatakan sebelum data diri diisi', async () => {
+    pasang(<SignupView />);
+    const ringkasan = await screen.findByTestId('signup-summary');
+
+    // Professional, 1 bulan: Rp 4.500.000.
+    expect(ringkasan.textContent).toContain('4.500.000');
+    expect(ringkasan.textContent).toContain(id('ui.cycle_monthly'));
+
+    fireEvent.change(screen.getByLabelText(id('ui.signup_cycle')), { target: { value: 'annual' } });
+    await waitFor(() => expect(screen.getByTestId('signup-summary').textContent).toContain('45.000.000'));
+  });
+});
+
+describe('Pemilih jangka waktu di halaman depan', () => {
+  it('TC-WEB-45 — empat pilihan ditawarkan, bulanan aktif secara bawaan', async () => {
+    pasang(<LandingView />);
+    await waitFor(() => expect(screen.getByText('Professional')).toBeTruthy());
+
+    for (const kunci of ['ui.cycle_monthly', 'ui.cycle_quarterly', 'ui.cycle_semiannual', 'ui.cycle_annual']) {
+      expect(screen.getByRole('button', { name: new RegExp(id(kunci)) })).toBeTruthy();
+    }
+    expect(screen.getByRole('button', { name: new RegExp(id('ui.cycle_monthly')) }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+  });
+
+  it('TC-WEB-46 — mengganti jangka waktu mengganti harga yang dipajang', async () => {
+    pasang(<LandingView />);
+    await waitFor(() => expect(screen.getByText('Professional')).toBeTruthy());
+
+    expect(screen.getByText(/4\.500\.000/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(id('ui.cycle_annual')) }));
+
+    // Harga 12 bulan Professional = 45.000.000, dan setara 3.750.000 per bulan.
+    await waitFor(() => expect(screen.getByText(/45\.000\.000/)).toBeTruthy());
+    expect(screen.getByText(/3\.750\.000/)).toBeTruthy();
+  });
+
+  it('TC-WEB-47 — harga berasal dari server, tidak dihitung ulang di klien', async () => {
+    // Server dipalsukan mengembalikan angka yang TIDAK cocok dengan rumus diskon mana
+    // pun. Antarmuka harus memajang angka itu apa adanya: harga adalah keputusan
+    // komersial, bukan sesuatu yang boleh ditebak ulang di peramban.
+    vi.mocked(api.plans).mockResolvedValue({
+      ...KATALOG,
+      plans: KATALOG.plans.map((p) =>
+        p.code === 'professional' ? { ...p, prices: { ...p.prices, annual: 33_333_000 } } : p,
+      ),
+    });
+    pasang(<LandingView />);
+    await waitFor(() => expect(screen.getByText('Professional')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(id('ui.cycle_annual')) }));
+    await waitFor(() => expect(screen.getByText(/33\.333\.000/)).toBeTruthy());
   });
 });
 

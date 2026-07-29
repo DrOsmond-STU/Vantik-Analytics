@@ -50,6 +50,54 @@ export type QuotaKey =
   | 'embed_tokens'
   | 'ai_calls_monthly';
 
+/**
+ * Siklus berlangganan yang ditawarkan (PRD 6.27).
+ *
+ * Dimodelkan sebagai KATALOG, bukan sepasang harga `monthlyPrice`/`annualPrice`, karena
+ * setiap siklus baru yang ditambahkan sebagai pasangan harga menuntut perubahan di
+ * setiap tempat yang menghitung harga — dan tempat yang terlewat diam-diam menagih
+ * angka yang salah. Dengan katalog, satu baris di sini menambah pilihan di seluruh
+ * sistem: halaman depan, pendaftaran, pratinjau perubahan paket, dan faktur.
+ *
+ * `discount` adalah potongan dibanding membayar bulanan selama jumlah bulan yang sama.
+ * Angkanya indikatif — PRD Bagian 12 menyatakan harga & diskon final ditetapkan tim
+ * bisnis. Diskon tahunan 1/6 dipilih agar `planPrice(plan, 'annual')` menghasilkan
+ * PERSIS `plan.annualPrice` yang sudah tercantum di katalog paket (dua bulan gratis);
+ * invarian itu diuji, sehingga katalog dan kalkulator tidak dapat menyimpang diam-diam.
+ */
+export type BillingCycle = 'monthly' | 'quarterly' | 'semiannual' | 'annual';
+
+export interface BillingCycleDefinition {
+  code: BillingCycle;
+  months: number;
+  discount: number;
+  sortOrder: number;
+}
+
+export const BILLING_CYCLES: readonly BillingCycleDefinition[] = [
+  { code: 'monthly', months: 1, discount: 0, sortOrder: 1 },
+  { code: 'quarterly', months: 3, discount: 0.05, sortOrder: 2 },
+  { code: 'semiannual', months: 6, discount: 0.1, sortOrder: 3 },
+  { code: 'annual', months: 12, discount: 1 / 6, sortOrder: 4 },
+];
+
+export const BILLING_CYCLE_BY_CODE = new Map(BILLING_CYCLES.map((c) => [c.code, c]));
+
+/**
+ * Penjaga tipe untuk masukan dari luar.
+ *
+ * Rute publik menerima siklus dari pengunjung yang belum masuk; nilai yang tidak dikenal
+ * DITOLAK alih-alih diam-diam dijadikan `monthly`, karena "diam-diam dijadikan bulanan"
+ * berarti pengunjung yang mengira membeli setahun mendapat sebulan.
+ */
+export function isBillingCycle(value: unknown): value is BillingCycle {
+  return typeof value === 'string' && BILLING_CYCLE_BY_CODE.has(value as BillingCycle);
+}
+
+export function cycleMonths(cycle: string): number {
+  return BILLING_CYCLE_BY_CODE.get(cycle as BillingCycle)?.months ?? 1;
+}
+
 export interface PlanDefinition {
   code: string;
   name: string;
@@ -192,6 +240,37 @@ export const PLAN_CATALOG: readonly PlanDefinition[] = [
 
 export const PLAN_BY_CODE = new Map(PLAN_CATALOG.map((p) => [p.code, p]));
 
+/**
+ * Harga satu paket untuk satu siklus, dalam rupiah penuh.
+ *
+ * SATU-SATUNYA tempat harga siklus dihitung. Pratinjau perubahan paket, faktur
+ * konversi uji coba, faktur perpanjangan, dan katalog publik semuanya memanggil fungsi
+ * ini — sehingga angka yang dilihat pengunjung di halaman depan dan angka yang tercetak
+ * di faktur berasal dari perhitungan yang sama, bukan dari dua rumus yang kebetulan
+ * mirip.
+ */
+export function planPrice(plan: PlanDefinition, cycle: string): number {
+  const definition = BILLING_CYCLE_BY_CODE.get(cycle as BillingCycle) ?? BILLING_CYCLE_BY_CODE.get('monthly')!;
+  return Math.round(plan.monthlyPrice * definition.months * (1 - definition.discount));
+}
+
+/** Harga seluruh siklus untuk satu paket — bentuk yang dipakai katalog publik. */
+export function planPrices(plan: PlanDefinition): Record<BillingCycle, number> {
+  const out = {} as Record<BillingCycle, number>;
+  for (const cycle of BILLING_CYCLES) out[cycle.code] = planPrice(plan, cycle.code);
+  return out;
+}
+
+/**
+ * Mengapa tenant tidak boleh menulis.
+ *
+ * Dibedakan karena LANGKAH PEMULIHANNYA berbeda: masa berlaku habis diselesaikan
+ * pelanggan sendiri dengan memperpanjang, sedangkan suspensi oleh operator tidak.
+ * Pesan "akses ditolak" yang sama untuk keduanya membuat pelanggan menunggu bantuan
+ * padahal tombol perpanjang ada di layarnya (SECURITY.md 17.4).
+ */
+export type ReadOnlyReason = 'subscription_expired' | 'tenant_status' | null;
+
 /** Feature flag efektif satu tenant. */
 export class FeatureFlags {
   constructor(
@@ -200,6 +279,9 @@ export class FeatureFlags {
     private readonly overrides: Partial<Record<ModuleKey, boolean>> = {},
     /** Tenant read-only saat tunggakan — SECURITY.md 16.4 */
     readonly readOnly = false,
+    readonly readOnlyReason: ReadOnlyReason = null,
+    /** Batas masa berlaku langganan berjalan, bila ada. */
+    readonly expiresAt: string | null = null,
   ) {}
 
   isEnabled(module: ModuleKey): boolean {
@@ -222,12 +304,21 @@ export class FeatureFlags {
     return this.plan.code;
   }
 
-  toJSON(): { plan: string; readOnly: boolean; modules: Record<string, boolean>; quotas: Record<string, number> } {
+  toJSON(): {
+    plan: string;
+    readOnly: boolean;
+    readOnlyReason: ReadOnlyReason;
+    expiresAt: string | null;
+    modules: Record<string, boolean>;
+    quotas: Record<string, number>;
+  } {
     const modules: Record<string, boolean> = {};
     for (const m of MODULE_KEYS) modules[m] = this.isEnabled(m);
     return {
       plan: this.plan.code,
       readOnly: this.readOnly,
+      readOnlyReason: this.readOnlyReason,
+      expiresAt: this.expiresAt,
       modules,
       quotas: { ...this.plan.quotas },
     };

@@ -45,7 +45,7 @@ dilakukan — perilaku yang disengaja (SECURITY.md Bagian 4), bukan kerusakan.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 432 test (391 backend + 41 komponen web)
+npm test              # 471 test (424 backend + 47 komponen web)
 npm run test:coverage # backend dengan ambang cakupan
 npm run test:web      # hanya uji komponen/DOM web app
 ```
@@ -136,7 +136,7 @@ berbeda-beda dan dinyatakan jujur di bawah — mengikuti prioritas rilis PRD Bag
 | 5. Manajemen Data | Dataset, Koneksi Eksternal, Data Modeling, Data Quality Center, KPI Center | Fungsional penuh |
 | 6. Monitoring | Alert Center, Digital Twin | Fungsional dengan **penjadwal**: ambang batas KPI disapu berkala, bukan hanya saat ada panggilan API. Pengiriman kanal lewat `NotificationTransport`, ingest sensor lewat HTTP (MQTT belum) |
 | 7. Administrasi Sistem | Master Pegawai, Otorisasi User, Log Aktivitas, Perangkat & Sesi | Fungsional penuh |
-| 8. Langganan & Billing | Manajemen Tenant, Langganan & Paket, Billing & Faktur, Usage Metering & Kuota | Fungsional; *payment gateway* lewat webhook terverifikasi tanda tangan |
+| 8. Langganan & Billing | Manajemen Tenant, Langganan & Paket, Billing & Faktur, Usage Metering & Kuota | Fungsional; jangka waktu 1/3/6/12 bulan, **penghentian otomatis saat masa berlaku habis** (dihitung dari tanggal pada tiap permintaan, tidak menunggu penjadwal), *payment gateway* lewat webhook terverifikasi tanda tangan |
 
 ### Yang sengaja belum diimplementasikan
 
@@ -163,7 +163,7 @@ PRD Bagian 12 masih menyisakan keputusan bisnis. Yang diasumsikan sementara di k
 | Pertanyaan (PRD 12) | Asumsi sementara |
 |---|---|
 | LLM eksternal atau self-hosted? | Platform berfungsi **penuh tanpa LLM** (penyedia deterministik). Penyedia eksternal opsional dan datanya dimasking lebih dulu. |
-| Harga final tiap paket & diskon tahunan | Angka indikatif di `featureFlags.ts`; tidak dipakai untuk penagihan nyata. |
+| Harga final tiap paket & diskon per jangka waktu | Angka indikatif di `BILLING_CYCLES` & `PLAN_CATALOG` (`featureFlags.ts`); satu tempat, dihitung server. Tidak dipakai untuk penagihan nyata. |
 | Payment gateway mana | Diabstraksi sebagai webhook terverifikasi tanda tangan; tidak terikat vendor. |
 | Lama uji coba gratis | Default 14 hari, parameter `trialDays`. |
 | Retensi Log Aktivitas | Fungsi arsip tersedia; kebijakan retensi belum dipatok. |
@@ -224,6 +224,7 @@ pelanggaran baru di masa depan.
 | `tests/public.test.ts` | Permukaan tanpa sesi: katalog paket, pendaftaran mandiri, dan pemulihan kata sandi — termasuk bahwa formulir lupa sandi tidak dapat dipakai memetakan alamat mana yang punya akun |
 | `tests/password.test.ts` | Penggantian mandiri (kata sandi lama wajib) dan reset oleh admin (mencabut sesi target), plus bukti bahwa endpoint-nya benar-benar dibatasi laju |
 | `tests/presentation.test.ts` | Angka korporat memakai agregat lintas dimensi, tren tidak mencampur dimensi, cakupan per divisi, dan penegakan baca-saja pada Balanced Scorecard |
+| `tests/subscription-lifecycle.test.ts` | Siklus 1/3/6/12 bulan, invarian harga katalog↔kalkulator, penjepitan tanggal akhir bulan, dan penghentian otomatis saat masa berlaku habis — termasuk bahwa blokirnya **tidak menunggu penjadwal** dan bahwa perpanjangan tetap dapat dilakukan saat ruang kerja terkunci |
 
 Uji komponen/DOM web app berada di `frontend/web-app/tests/` (proyek vitest tersendiri,
 karena butuh jsdom sedangkan tsconfig `services/` sengaja tanpa `lib: DOM`):
@@ -232,7 +233,7 @@ karena butuh jsdom sedangkan tsconfig `services/` sengaja tanpa `lib: DOM`):
 |---|---|
 | `tests/login.test.tsx` | Alur masuk dua langkah: formulir berganti saat faktor kedua diminta, tantangan mati mengembalikan pengguna ke langkah kata sandi, alasan **dan** langkah pemulihan keduanya tampil, kirim ganda dicegah |
 | `tests/mfa-panel.test.tsx` | Kode pemulihan tampil sekali disertai peringatannya, rahasia tidak hilang setelah satu kode salah, tombol matikan disembunyikan untuk peran yang mewajibkan MFA |
-| `tests/public.test.tsx` | Halaman depan, berlangganan, lupa sandi, dan atur ulang — termasuk bahwa antarmuka tidak membedakan jawaban untuk alamat terdaftar dan tidak terdaftar |
+| `tests/public.test.tsx` | Halaman depan, berlangganan, lupa sandi, dan atur ulang — termasuk pemilihan jangka waktu 1/3/6/12 bulan, bahwa harga datang dari server alih-alih dihitung ulang di peramban, dan bahwa antarmuka tidak membedakan jawaban untuk alamat terdaftar dan tidak terdaftar |
 | `tests/fingerprint.test.tsx` | Peramban yang memblokir kanvas demi privasi tidak menggagalkan login |
 
 Cakupan backend saat ini: **85,8% baris / 85,7% fungsi / 68,1% branch**. Ambang ditegakkan

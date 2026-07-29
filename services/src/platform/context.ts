@@ -169,8 +169,21 @@ export class RequestContext {
     throw new ForbiddenError('error.module_not_in_plan', { module, plan: this.flags.planCode });
   }
 
-  /** Tenant dalam mode baca-saja akibat tunggakan (SECURITY.md 16.4). */
+  /**
+   * Tenant dalam mode baca-saja akibat tunggakan atau masa berlaku habis
+   * (SECURITY.md 16.4, PRD 6.27/6.28).
+   *
+   * Membaca tetap diizinkan dengan sengaja: data pelanggan tidak disandera, hanya
+   * perubahan yang dihentikan sampai langganan dipulihkan.
+   */
   requireWritable(): void {
+    if (this.flags.readOnlyReason === 'subscription_expired') {
+      throw new ForbiddenError('error.subscription_expired', {
+        recoveryKey: 'recovery.renew_subscription',
+        expiredAt: this.flags.expiresAt,
+        status: this.tenant.status,
+      });
+    }
     if (this.flags.readOnly || this.tenant.status === 'read_only' || this.tenant.status === 'suspended') {
       throw new ForbiddenError('error.tenant_read_only', { status: this.tenant.status });
     }
@@ -218,18 +231,64 @@ export function toTenantInfo(row: TenantRow): TenantInfo {
   };
 }
 
-/** Menyusun feature flag efektif dari langganan aktif tenant. */
+/** Baris langganan seperlunya untuk menghitung masa berlaku. */
+export interface SubscriptionPeriodRow {
+  status: string;
+  trial_ends_at: string | null;
+  current_period_end: string;
+}
+
+/**
+ * Batas masa berlaku yang sesungguhnya.
+ *
+ * Selama uji coba, yang mengikat adalah akhir uji coba; setelah berbayar, akhir periode
+ * berjalan. Keduanya tersimpan di baris yang sama, dan memilih yang keliru berarti uji
+ * coba 14 hari tetap dapat menulis sampai akhir periode langganan yang belum pernah
+ * dibayar.
+ */
+export function subscriptionExpiresAt(sub: SubscriptionPeriodRow): string {
+  return sub.status === 'trialing' ? (sub.trial_ends_at ?? sub.current_period_end) : sub.current_period_end;
+}
+
+/** Benar bila masa berlaku sudah terlampaui pada saat dipanggil. */
+export function subscriptionLapsed(sub: SubscriptionPeriodRow, at: number = Date.now()): boolean {
+  return Date.parse(subscriptionExpiresAt(sub)) <= at;
+}
+
+/**
+ * Menyusun feature flag efektif dari langganan aktif tenant.
+ *
+ * Masa berlaku dihitung DI SINI, dari tanggal, pada setiap permintaan — bukan dibaca
+ * dari status yang sudah dituliskan penjadwal. Alasannya adalah kenyataan shared
+ * hosting: Passenger mematikan proses yang idle, dan sebagian host tidak punya cron,
+ * jadi penjadwal bisa saja belum berjalan sejak masa berlaku habis. Kalau blokir
+ * bergantung padanya, langganan yang kedaluwarsa tetap dapat menulis sampai ada yang
+ * kebetulan membangunkan penjadwal — persis kegagalan senyap yang hendak dicegah.
+ *
+ * Penjadwal tetap ada, tetapi tugasnya lain: MENERBITKAN faktur perpanjangan, menaikkan
+ * tangga penurunan akses, dan memberi tahu pelanggan. Blokirnya sendiri tidak menunggu
+ * siapa pun.
+ */
 export function loadFeatureFlags(db: Db, tenantId: string, tenantStatus: string): FeatureFlags {
   const sub = db
     .prepare(
-      `SELECT plan_code FROM subscriptions
+      `SELECT plan_code, status, trial_ends_at, current_period_end FROM subscriptions
         WHERE tenant_id = ? AND status IN ('trialing','active','past_due')
         ORDER BY created_at DESC LIMIT 1`,
     )
-    .get(tenantId) as { plan_code: string } | undefined;
+    .get(tenantId) as (SubscriptionPeriodRow & { plan_code: string }) | undefined;
 
   const planCode = sub?.plan_code ?? 'starter';
   const plan: PlanDefinition = PLAN_BY_CODE.get(planCode) ?? PLAN_BY_CODE.get('starter')!;
-  const readOnly = tenantStatus === 'read_only' || tenantStatus === 'past_due';
-  return new FeatureFlags(plan, {}, readOnly);
+  const lapsed = sub !== undefined && subscriptionLapsed(sub);
+  const blockedByStatus = tenantStatus === 'read_only' || tenantStatus === 'past_due';
+  return new FeatureFlags(
+    plan,
+    {},
+    lapsed || blockedByStatus,
+    // Masa berlaku habis disebut lebih dulu: itu sebab yang dapat diselesaikan sendiri
+    // oleh pelanggan, dan status tenant `past_due` biasanya hanyalah akibatnya.
+    lapsed ? 'subscription_expired' : blockedByStatus ? 'tenant_status' : null,
+    sub ? subscriptionExpiresAt(sub) : null,
+  );
 }

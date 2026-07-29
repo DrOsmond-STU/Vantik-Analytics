@@ -52,8 +52,8 @@ const CORE_MIGRATIONS: readonly Migration[] = [
         id              TEXT PRIMARY KEY,
         tenant_id       TEXT NOT NULL REFERENCES tenants(id),
         plan_code       TEXT NOT NULL REFERENCES plans(code),
-        billing_cycle   TEXT NOT NULL,             -- monthly | annual
-        status          TEXT NOT NULL,             -- trialing | active | past_due | canceled
+        billing_cycle   TEXT NOT NULL,             -- monthly | quarterly | semiannual | annual
+        status          TEXT NOT NULL,             -- trialing | active | past_due | canceled | expired
         trial_ends_at   TEXT,
         current_period_start TEXT NOT NULL,
         current_period_end   TEXT NOT NULL,
@@ -1090,6 +1090,33 @@ const REMAINING_MAIN_MIGRATIONS: readonly Migration[] = [
       );
       CREATE INDEX idx_reset_token ON password_reset_requests(token_hash);
       CREATE INDEX idx_reset_expiry ON password_reset_requests(expires_at);
+    `,
+  },
+
+  {
+    id: '0013_subscription_lifecycle',
+    sql: `
+      -- Siklus berlangganan 1 / 3 / 6 / 12 bulan, dan penghentian otomatis saat habis.
+      --
+      -- Sebelumnya \`billing_cycle\` hanya bernilai monthly atau annual, dan TIDAK ADA
+      -- yang memeriksa \`current_period_end\`: masa berlaku lewat tanpa akibat apa pun —
+      -- tenant yang tidak memperpanjang tetap dapat menulis selamanya.
+      --
+      -- \`lapsed_at\` adalah saat sistem PERTAMA KALI mencatat masa berlaku terlampaui.
+      -- Ia dipisahkan dari \`current_period_end\` karena tangga penurunan akses
+      -- (tenggang → baca-saja → suspensi) dihitung dari sana, dan periode dapat maju
+      -- saat faktur perpanjangan lunas tanpa menghapus jejak bahwa pernah terjadi
+      -- keterlambatan.
+      ALTER TABLE subscriptions ADD COLUMN auto_renew INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE subscriptions ADD COLUMN lapsed_at TEXT;
+      ALTER TABLE subscriptions ADD COLUMN renewal_reminded_for TEXT;
+
+      -- Jenis faktur. Diperlukan supaya pembayaran yang masuk lewat webhook tahu APA
+      -- yang dibelinya: hanya faktur 'renewal' yang memajukan masa berlaku langganan,
+      -- sedangkan pembayaran faktur pro-rata atau ad-hoc tidak boleh memperpanjang
+      -- masa berlaku secara diam-diam.
+      ALTER TABLE invoices ADD COLUMN kind TEXT NOT NULL DEFAULT 'adhoc';
+      CREATE INDEX idx_invoices_kind ON invoices(tenant_id, kind, status);
     `,
   },
 ];

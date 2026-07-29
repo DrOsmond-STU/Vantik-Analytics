@@ -125,7 +125,7 @@ export const api = {
     organisationName: string;
     slug: string;
     planCode: string;
-    billingCycle: 'monthly' | 'annual';
+    billingCycle: BillingCycle;
     fullName: string;
     email: string;
     password: string;
@@ -165,11 +165,30 @@ export type LoginOutcome =
   | { token: string; expiresAt: string; deviceRegistered: boolean }
   | { mfaRequired: true; challengeToken: string; expiresAt: string; recoveryAccepted: boolean };
 
+/** Siklus berlangganan yang ditawarkan: 1, 3, 6, atau 12 bulan. */
+export type BillingCycle = 'monthly' | 'quarterly' | 'semiannual' | 'annual';
+
+export interface BillingCycleOption {
+  code: BillingCycle;
+  months: number;
+  /** Potongan dibanding membayar bulanan selama jumlah bulan yang sama. */
+  discount: number;
+  sortOrder: number;
+}
+
 export interface PublicPlan {
   code: string;
   name: string;
   monthlyPrice: number;
   annualPrice: number;
+  /**
+   * Harga per siklus, DIHITUNG SERVER.
+   *
+   * Antarmuka tidak menghitung diskonnya sendiri: kalau ia melakukannya, angka yang
+   * dipajang di halaman depan dan angka yang tercetak di faktur berasal dari dua rumus
+   * yang dapat menyimpang tanpa ada yang menyadarinya.
+   */
+  prices: Record<BillingCycle, number>;
   moduleCount: number;
   quotas: Record<string, number>;
   sortOrder: number;
@@ -177,6 +196,7 @@ export interface PublicPlan {
 
 export interface PublicPlans {
   plans: PublicPlan[];
+  cycles: BillingCycleOption[];
   /** False bila operator mematikan pendaftaran mandiri (`VANTIK_SELF_SIGNUP=off`). */
   signupEnabled: boolean;
   currency: string;
@@ -211,7 +231,15 @@ export interface Session {
     whiteLabel: boolean;
     maxDevicesPerUser: number;
   };
-  flags: { plan: string; readOnly: boolean; modules: Record<string, boolean>; quotas: Record<string, number> };
+  flags: {
+    plan: string;
+    readOnly: boolean;
+    /** Mengapa baca-saja — menentukan langkah pemulihan yang ditawarkan antarmuka. */
+    readOnlyReason: 'subscription_expired' | 'tenant_status' | null;
+    expiresAt: string | null;
+    modules: Record<string, boolean>;
+    quotas: Record<string, number>;
+  };
   rls: { restricted: boolean; dimensions: string[] };
   permissions: string[];
 }

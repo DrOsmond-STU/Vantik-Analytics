@@ -212,7 +212,10 @@ Mengikuti DEPLOYMENT.md Bagian 10 (checklist pra-peluncuran R1) dan SECURITY.md:
 - [ ] **Kode pemulihan admin sudah dicetak/disimpan di luar sistem**
 - [ ] Backup `~/vantik-data/` masuk jadwal backup hosting
 - [ ] **Cron penjadwal terpasang** bila hosting mendukungnya (lihat 8.2) — tanpa itu,
-      notifikasi ambang batas hanya dievaluasi selama ada proses yang hidup
+      notifikasi ambang batas hanya dievaluasi selama ada proses yang hidup, dan faktur
+      perpanjangan tertunda (blokir masa berlaku sendiri tetap berjalan — lihat 8.1d)
+- [ ] Jangka waktu berlangganan tenant sudah sesuai kontrak (lihat 8.1d) dan tanggal
+      berakhirnya tercatat di luar sistem
 - [ ] Antrean notifikasi diperiksa (`GET /api/v1/notifications/outbox`) — selama belum ada
       transport nyata, setiap pesan berstatus `queued` dan perlu disampaikan manual
 
@@ -292,10 +295,43 @@ VANTIK_SELF_SIGNUP=off
 Halaman depan ikut menyembunyikan ajakan mendaftar bila dimatikan, sehingga tidak ada
 tombol yang mengarah ke penolakan.
 
+### 8.1d Masa berlaku langganan: 1, 3, 6, atau 12 bulan
+
+Pengunjung memilih jangka waktunya sendiri saat berlangganan — 1 bulan, 3 bulan, 6 bulan,
+atau 12 bulan. Semakin panjang jangka waktunya, semakin murah biaya per bulannya; angka
+diskonnya ada di `BILLING_CYCLES` (`services/src/platform/featureFlags.ts`) dan **harga
+untuk seluruh siklus dihitung server**, bukan di peramban, supaya angka di halaman depan
+dan angka di faktur tidak dapat berbeda.
+
+Ketika masa berlaku habis, **sistem berhenti sendiri**:
+
+| Sejak masa berlaku habis | Status tenant | Yang terjadi |
+| --- | --- | --- |
+| Seketika | `past_due` | Menulis DIHENTIKAN. Membaca, mengunduh, dan mencetak tetap jalan. Faktur perpanjangan diterbitkan, admin diberi tahu. |
+| Lewat 14 hari | `read_only` | Sama, dinaikkan agar terlihat operator. |
+| Lewat 28 hari | `suspended` | Sesi yang masih terbuka dicabut. **Data tetap disimpan** — tidak ada yang dihapus karena keterlambatan. |
+
+Dua hal yang perlu Anda ketahui sebagai operator:
+
+1. **Blokirnya tidak menunggu cron.** Kedaluwarsa dihitung dari tanggal pada setiap
+   permintaan. Jadi meski penjadwal (8.2) tidak pernah berjalan — misalnya hosting tanpa
+   cron dan proses selalu idle — langganan yang habis tetap berhenti tepat waktu. Yang
+   ditunda tanpa penjadwal hanyalah penerbitan faktur, pengingat, dan kenaikan tangga
+   status.
+2. **Ada jalan keluarnya dari dalam aplikasi.** Halaman *Langganan & Paket* tetap dapat
+   dibuka saat terkunci, dan tombol perpanjang di sana tetap berfungsi. Perpanjangan yang
+   dibayar sangat terlambat dihitung ulang dari tanggal pembayaran, sehingga tidak pernah
+   menghasilkan periode yang sudah lewat.
+
+Pengingat perpanjangan dikirim 7 hari sebelum berakhir, ke pemegang peran Super Admin
+saja. Pengiriman itu **melewati antrean notifikasi** — baca 8.3: tanpa transport nyata,
+pesannya menunggu di antrean dan tidak sampai ke email siapa pun.
+
 ### 8.2 Penjadwal: pasang cron bila hosting mendukungnya
 
-Aplikasi punya ticker dalam proses yang menyapu ambang batas KPI dan laporan terjadwal
-setiap 5 menit, plus penyusulan saat proses dinyalakan. Itu cukup untuk situs yang ramai,
+Aplikasi punya ticker dalam proses yang menyapu ambang batas KPI, laporan terjadwal, dan
+masa berlaku langganan setiap 5 menit, plus penyusulan saat proses dinyalakan. Itu cukup
+untuk situs yang ramai,
 **tetapi Passenger mematikan proses yang idle** — pada situs yang sepi, tidak ada proses
 yang hidup untuk melakukan sapuan, sehingga ambang batas yang terlampaui tengah malam tidak
 diketahui siapa pun sampai ada orang membuka aplikasi.

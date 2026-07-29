@@ -14,6 +14,7 @@ import { KeyRing } from '../src/platform/crypto.ts';
 import { RequestContext, loadFeatureFlags, toTenantInfo } from '../src/platform/context.ts';
 import { requiresMfa, STANDARD_ROLES, type RoleCode } from '../src/platform/rbac.ts';
 import { RlsScope, type RlsRule } from '../src/platform/rls.ts';
+import type { BillingCycle } from '../src/platform/featureFlags.ts';
 import { AuthService } from '../src/identity-service/auth.ts';
 import { TenantService } from '../src/tenant-service/index.ts';
 import type { FingerprintComponents } from '../src/identity-service/deviceFingerprint.ts';
@@ -69,7 +70,7 @@ let tenantCounter = 0;
 
 export function provisionTenant(
   harness: Harness,
-  options: { planCode?: string; slug?: string } = {},
+  options: { planCode?: string; slug?: string; billingCycle?: BillingCycle; trialDays?: number } = {},
 ): TenantFixture {
   const slug = options.slug ?? `tenant${++tenantCounter}x`;
   const { tenantId, adminUserId } = harness.tenants.provision(
@@ -77,7 +78,8 @@ export function provisionTenant(
       name: `Organisasi ${slug}`,
       slug,
       planCode: options.planCode ?? 'enterprise',
-      billingCycle: 'monthly',
+      billingCycle: options.billingCycle ?? 'monthly',
+      trialDays: options.trialDays,
       admin: {
         fullName: 'Admin Uji',
         nik: `NIK-${slug}`,

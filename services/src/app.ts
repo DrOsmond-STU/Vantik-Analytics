@@ -27,7 +27,13 @@ import {
   securityHeaders,
   type HttpDeps,
 } from './platform/http.ts';
-import { MODULE_KEYS, PLAN_CATALOG } from './platform/featureFlags.ts';
+import {
+  BILLING_CYCLES,
+  MODULE_KEYS,
+  PLAN_CATALOG,
+  isBillingCycle,
+  planPrices,
+} from './platform/featureFlags.ts';
 import { requiresMfa } from './platform/rbac.ts';
 
 import { AuthService, AuthorizationService, DeviceService, EmployeeService } from './identity-service/index.ts';
@@ -1135,10 +1141,14 @@ export function createApp(options: AppOptions = {}): VantikApp {
   /* --- Langganan & Billing (Domain 8) --- */
 
   const billingOf = (req: Request): BillingService =>
-    new BillingService(requireContext(req), new MeteringService(requireContext(req)));
+    new BillingService(requireContext(req), new MeteringService(requireContext(req)), outbox);
 
   api.get('/subscription', (req, res) => {
-    res.json({ subscription: billingOf(req).currentPlan(), plans: billingOf(req).availablePlans() });
+    res.json({
+      subscription: billingOf(req).currentPlan(),
+      plans: billingOf(req).availablePlans(),
+      cycles: BILLING_CYCLES,
+    });
   });
   api.post('/subscription/preview', (req, res) => {
     res.json(billingOf(req).previewPlanChange((req.body as { plan: string }).plan));
@@ -1153,6 +1163,17 @@ export function createApp(options: AppOptions = {}): VantikApp {
   });
   api.post('/subscription/cancel', (req, res) => {
     res.json(billingOf(req).cancel((req.body as { reason?: string }).reason));
+  });
+  /**
+   * Perpanjangan.
+   *
+   * Satu-satunya rute tulis yang tetap dapat dipanggil saat ruang kerja terkunci karena
+   * masa berlaku habis — lihat `BillingService.renew()`. Tanpa pengecualian itu, blokir
+   * mengunci pintu keluarnya sendiri.
+   */
+  api.post('/subscription/renew', (req, res) => {
+    const body = req.body as { paymentToken: string; paymentMethodLabel: string };
+    res.json(billingOf(req).renew(body.paymentToken, body.paymentMethodLabel));
   });
   api.get('/invoices', (req, res) => {
     res.json({ invoices: billingOf(req).listInvoices() });
@@ -1250,10 +1271,15 @@ export function createApp(options: AppOptions = {}): VantikApp {
         name: plan.name,
         monthlyPrice: plan.monthlyPrice,
         annualPrice: plan.annualPrice,
+        // Harga untuk SETIAP siklus, dihitung server. Klien tidak menghitung diskon
+        // sendiri: kalau ia melakukannya, angka di halaman depan dan angka di faktur
+        // berasal dari dua rumus yang dapat menyimpang tanpa ada yang menyadarinya.
+        prices: planPrices(plan),
         moduleCount: Object.values(plan.features).filter(Boolean).length,
         quotas: plan.quotas,
         sortOrder: plan.sortOrder,
       })),
+      cycles: BILLING_CYCLES,
       signupEnabled: selfSignupEnabled(),
       currency: 'IDR',
     });
@@ -1283,7 +1309,7 @@ export function createApp(options: AppOptions = {}): VantikApp {
         organisationName?: string;
         slug?: string;
         planCode?: string;
-        billingCycle?: 'monthly' | 'annual';
+        billingCycle?: string;
         fullName?: string;
         email?: string;
         password?: string;
@@ -1292,13 +1318,18 @@ export function createApp(options: AppOptions = {}): VantikApp {
       if (!body.organisationName || !body.slug || !body.planCode || !body.fullName || !body.email || !body.password) {
         throw new ValidationError('error.signup_incomplete');
       }
+      // Siklus yang tidak dikenal DITOLAK, bukan diam-diam dijadikan bulanan: pendaftar
+      // yang mengira membeli setahun tidak boleh mendapat sebulan tanpa diberi tahu.
+      if (body.billingCycle !== undefined && !isBillingCycle(body.billingCycle)) {
+        throw new ValidationError('error.billing_cycle_unknown', { cycle: body.billingCycle });
+      }
 
       const result = tenants.provision(
         {
           name: String(body.organisationName).slice(0, 120),
           slug: String(body.slug).toLowerCase(),
           planCode: String(body.planCode),
-          billingCycle: body.billingCycle === 'annual' ? 'annual' : 'monthly',
+          billingCycle: body.billingCycle ?? 'monthly',
           admin: {
             fullName: String(body.fullName).slice(0, 120),
             // Pendaftar mandiri belum punya nomor pegawai; Master Pegawai menuntut satu
@@ -1439,9 +1470,22 @@ export function createApp(options: AppOptions = {}): VantikApp {
     return queued;
   };
 
+  /**
+   * Penegakan masa berlaku langganan.
+   *
+   * Pekerjaan ini TIDAK memblokir apa pun — blokirnya dihitung dari tanggal pada setiap
+   * permintaan di `loadFeatureFlags()`, supaya masa berlaku yang habis langsung berlaku
+   * walau penjadwal belum sempat berjalan. Yang dikerjakan di sini adalah hal-hal yang
+   * memang harus terjadi SEKALI: menerbitkan faktur perpanjangan, mengirim pengingat,
+   * menaikkan tangga penurunan akses, dan mencatatnya.
+   */
+  const enforceSubscriptions: JobRunner = (ctx) =>
+    new BillingService(ctx, new MeteringService(ctx), outbox).enforceLifecycle().actions;
+
   const scheduler = new Scheduler(db, audit, {
     'alerts.sweep': sweepAlerts,
     'reports.scheduled': dispatchScheduledReports,
+    'subscription.lifecycle': enforceSubscriptions,
   });
 
   api.get('/system/scheduler', (req, res) => {
