@@ -118,6 +118,30 @@ export function periodEndFor(startIso: string, cycle: string): string {
   return addMonths(startIso, cycleMonths(cycle));
 }
 
+/**
+ * Periode yang berlaku setelah sebuah faktur perpanjangan dibayar.
+ *
+ * Dipisahkan menjadi fungsi murni karena kini ada DUA pihak yang dapat menyatakan sebuah
+ * faktur lunas — webhook payment gateway dan operator yang mencatat transfer manual — dan
+ * aturan di bawah ini terlalu mudah menyimpang bila ditulis dua kali:
+ *
+ * Periode hasil perpanjangan TIDAK BOLEH berakhir di masa lalu. Faktur diterbitkan untuk
+ * periode yang dimulai saat masa berlaku habis, supaya pelanggan yang membayar cepat tidak
+ * kehilangan hari. Tetapi pelanggan yang terlambat lebih lama daripada satu siklus akan
+ * membeli periode yang sudah lewat: ia membayar, lalu tetap terkunci — dan tidak ada
+ * penjelasan yang masuk akal untuk itu. Selama masa tunggakan ruang kerjanya baca-saja,
+ * jadi waktu itu memang tidak ia pakai; periodenya dihitung ulang dari saat pembayaran.
+ */
+export function periodAfterPayment(
+  invoice: { period_start: string; period_end: string },
+  cycle: string,
+  paidAtIso: string,
+): { start: string; end: string } {
+  const late = Date.parse(invoice.period_end) <= Date.parse(paidAtIso);
+  const start = late ? paidAtIso : invoice.period_start;
+  return { start, end: late ? periodEndFor(start, cycle) : invoice.period_end };
+}
+
 export class BillingService {
   constructor(
     private readonly ctx: RequestContext,
@@ -429,6 +453,22 @@ export class BillingService {
     signatureHeader: string,
     secret: string,
   ): { accepted: boolean; reasonKey?: string } {
+    // Rahasia kosong berarti webhook BELUM dikonfigurasi, dan itu harus menjadi penolakan
+    // tegas. Tanpa penjagaan ini, tanda tangan yang sah adalah HMAC dengan kunci kosong —
+    // yang dapat dihitung siapa pun yang tahu rahasianya belum diisi. Jalur ini menyatakan
+    // sebuah faktur lunas, jadi terbuka tanpa sengaja bukan pilihan.
+    if (secret.trim() === '') {
+      this.ctx.log({
+        action: 'billing.webhook_rejected',
+        module: 'Billing & Faktur',
+        objectType: 'webhook',
+        outcome: 'denied',
+        severity: 'critical',
+        detail: { reason: 'secret_not_configured' },
+      });
+      return { accepted: false, reasonKey: 'error.payment_webhook_not_configured' };
+    }
+
     const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
     const provided = signatureHeader.replace(/^sha256=/, '');
 
@@ -501,19 +541,9 @@ export class BillingService {
     if ((sub.activated_at ?? null) === null) updates.activated_at = nowIso();
 
     if (invoice.kind === 'renewal') {
-      // Periode hasil perpanjangan TIDAK BOLEH berakhir di masa lalu.
-      //
-      // Faktur diterbitkan untuk periode yang dimulai saat masa berlaku habis, supaya
-      // pelanggan yang membayar cepat tidak kehilangan hari. Tetapi pelanggan yang
-      // terlambat lebih lama daripada satu siklus akan membeli periode yang sudah
-      // lewat: ia membayar, lalu tetap terkunci — dan tidak ada penjelasan yang masuk
-      // akal untuk itu. Selama masa tunggakan ruang kerjanya baca-saja, jadi waktu itu
-      // memang tidak ia pakai; periodenya dihitung ulang dari saat pembayaran.
-      const at = nowIso();
-      const start = Date.parse(invoice.period_end) <= Date.now() ? at : invoice.period_start;
-      updates.current_period_start = start;
-      updates.current_period_end =
-        start === invoice.period_start ? invoice.period_end : periodEndFor(start, sub.billing_cycle);
+      const period = periodAfterPayment(invoice, sub.billing_cycle, nowIso());
+      updates.current_period_start = period.start;
+      updates.current_period_end = period.end;
       updates.lapsed_at = null;
       updates.renewal_reminded_for = null;
       // Downgrade yang ditunda berlaku di awal siklus berikutnya (PRD 6.27) — dan
@@ -529,14 +559,25 @@ export class BillingService {
   }
 
   /**
-   * Memperpanjang langganan dengan membayar faktur perpanjangan yang terbuka.
+   * Menerbitkan faktur perpanjangan, dan HANYA itu.
    *
-   * Ini adalah JALAN KELUAR dari blokir kedaluwarsa, dan sengaja diizinkan meski tenant
+   * Sebelumnya metode ini menerima `paymentToken` berupa string apa saja, menandai
+   * fakturnya sendiri `paid`, lalu memperpanjang masa berlaku. Artinya pemegang
+   * `subscription:write` — yaitu pelanggan sendiri — dapat memperpanjang ruang kerjanya
+   * gratis, berulang kali, tanpa satu rupiah pun masuk dan tanpa satu pun kesalahan
+   * tercatat. Pihak yang berutang tidak boleh menjadi pihak yang menyatakan utangnya
+   * lunas; wewenang itu sekarang ada di `billing:settle` (sisi platform) dan di webhook
+   * payment gateway yang tanda tangannya diverifikasi.
+   *
+   * Ini tetap JALAN KELUAR dari blokir kedaluwarsa, dan sengaja diizinkan meski tenant
    * sedang baca-saja: `requireWritable()` TIDAK dipanggil di sini. Kalau dipanggil,
    * blokirnya akan mengunci pintu perbaikannya sendiri — pelanggan yang masa berlakunya
-   * habis tidak akan pernah bisa memperpanjang lewat aplikasi.
+   * habis tidak akan pernah bisa memulai perpanjangan lewat aplikasi.
+   *
+   * Faktur yang masih terbuka DIKEMBALIKAN apa adanya alih-alih diterbitkan lagi: menekan
+   * tombol dua kali tidak boleh menghasilkan dua tagihan untuk periode yang sama.
    */
-  renew(paymentToken: string, paymentMethodLabel: string): InvoiceView {
+  requestRenewal(): InvoiceView {
     this.ctx.require('subscription:write', { module: 'Manajemen Langganan & Paket' });
 
     const sub = this.currentSubscription();
@@ -546,55 +587,30 @@ export class BillingService {
       { orderBy: 'created_at DESC' },
     );
     const unpaid = open.find((i) => i.id && this.invoiceStatus(i.id) !== 'paid');
+    if (unpaid) return this.invoiceById(unpaid.id);
 
-    // Tidak ada faktur terbuka: pelanggan memperpanjang lebih awal. Terbitkan satu
-    // untuk periode berikutnya, lalu bayar — sehingga jalurnya sama, bukan cabang
-    // istimewa yang perilakunya berbeda.
-    const invoice =
-      unpaid ??
-      (() => {
-        const plan = PLAN_BY_CODE.get(sub.plan_code)!;
-        const start = subscriptionLapsed(sub) ? subscriptionExpiresAt(sub) : sub.current_period_end;
-        return this.issueInvoice({
-          lines: [
-            {
-              description: `${plan.name} — perpanjangan ${CYCLE_LABEL[sub.billing_cycle] ?? sub.billing_cycle}`,
-              amount: planPrice(plan, sub.billing_cycle),
-            },
-          ],
-          periodStart: start,
-          periodEnd: periodEndFor(start, sub.billing_cycle),
-          kind: 'renewal',
-        });
-      })();
-
-    this.ctx.db.update(
-      'invoices',
-      { id: invoice.id },
-      {
-        status: 'paid',
-        paid_at: nowIso(),
-        gateway_ref: paymentToken,
-        payment_method_label: paymentMethodLabel,
-      },
-    );
-    this.applyPaidInvoice({
+    const plan = PLAN_BY_CODE.get(sub.plan_code)!;
+    const start = subscriptionLapsed(sub) ? subscriptionExpiresAt(sub) : sub.current_period_end;
+    const invoice = this.issueInvoice({
+      lines: [
+        {
+          description: `${plan.name} — perpanjangan ${CYCLE_LABEL[sub.billing_cycle] ?? sub.billing_cycle}`,
+          amount: planPrice(plan, sub.billing_cycle),
+        },
+      ],
+      periodStart: start,
+      periodEnd: periodEndFor(start, sub.billing_cycle),
       kind: 'renewal',
-      period_start: invoice.period_start,
-      period_end: invoice.period_end,
     });
 
     this.ctx.log({
-      action: 'subscription.renewed',
+      action: 'subscription.renewal_requested',
       module: 'Manajemen Langganan & Paket',
-      objectType: 'subscription',
-      objectId: sub.id,
+      objectType: 'invoice',
+      objectId: invoice.id,
+      objectLabel: invoice.number,
       severity: 'notice',
-      detail: {
-        cycle: sub.billing_cycle,
-        periodEnd: invoice.period_end,
-        invoiceId: invoice.id,
-      },
+      detail: { cycle: sub.billing_cycle, periodEnd: invoice.period_end, total: invoice.total },
     });
 
     return this.invoiceById(invoice.id);

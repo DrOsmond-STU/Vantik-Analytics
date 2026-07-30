@@ -217,6 +217,11 @@ Mengikuti DEPLOYMENT.md Bagian 10 (checklist pra-peluncuran R1) dan SECURITY.md:
       aplikasi (blokir masa berlaku sendiri tetap berjalan — lihat 8.1d)
 - [ ] Jangka waktu berlangganan tenant sudah sesuai kontrak (lihat 8.1d) dan tanggal
       berakhirnya tercatat di luar sistem
+- [ ] **Ada pemegang peran Platform Operator** (lihat 8.1f) — tanpa `billing:settle`, tidak
+      ada seorang pun yang dapat mencatat pembayaran, dan pelanggan yang sudah transfer
+      tetap terkunci
+- [ ] `VANTIK_PAYMENT_WEBHOOK_SECRET` diisi bila memakai payment gateway; dibiarkan kosong
+      berarti webhook-nya MENOLAK semua pemberitahuan (fail secure)
 - [ ] Jendela pemangkasan tabel ditinjau bila pemakaian berat (lihat 8.4); pertumbuhan
       berkas audit dipahami tidak dapat dipangkas (lihat 9b)
 - [ ] Kredensial notifikasi diisi (lihat 8.3) — SMTP minimal, karena tanpanya OTP pemindahan
@@ -346,13 +351,62 @@ Dua hal yang perlu Anda ketahui sebagai operator:
    ditunda tanpa penjadwal hanyalah penerbitan faktur, pengingat, dan kenaikan tangga
    status.
 2. **Ada jalan keluarnya dari dalam aplikasi.** Halaman *Langganan & Paket* tetap dapat
-   dibuka saat terkunci, dan tombol perpanjang di sana tetap berfungsi. Perpanjangan yang
-   dibayar sangat terlambat dihitung ulang dari tanggal pembayaran, sehingga tidak pernah
-   menghasilkan periode yang sudah lewat.
+   dibuka saat terkunci, dan tombolnya tetap berfungsi — tetapi tombol itu **menerbitkan
+   faktur**, bukan memperpanjang (lihat 8.1f). Perpanjangan yang dibayar sangat terlambat
+   dihitung ulang dari tanggal pembayaran, sehingga tidak pernah menghasilkan periode yang
+   sudah lewat.
 
 Pengingat perpanjangan dikirim 7 hari sebelum berakhir, ke pemegang peran Super Admin
 saja. Pengiriman itu **melewati antrean notifikasi** — baca 8.3: selama kanal email belum
 diisi, pesannya menunggu di antrean dan tidak sampai ke email siapa pun.
+
+#### 8.1f Siapa yang berwenang menyatakan sebuah faktur DIBAYAR
+
+Ini kontrol komersial terpenting di panduan ini, dan bentuknya sengaja tidak nyaman:
+**pelanggan tidak dapat menyatakan pembayarannya sendiri.**
+
+Tombol di halaman *Langganan & Paket* hanya **menerbitkan faktur**. Masa berlaku maju
+hanya setelah pembayarannya tercatat, dan yang berwenang mencatat hanya dua:
+
+| Pencatat | Bagaimana |
+|---|---|
+| **Webhook payment gateway** | `POST /webhooks/payment`, tanda tangan diverifikasi dengan `VANTIK_PAYMENT_WEBHOOK_SECRET` |
+| **Operator platform** | **Manajemen Tenant → Faktur menunggu pembayaran**, memakai izin `billing:settle` |
+
+Izin `billing:settle` **ditolak secara eksplisit** untuk Super Admin tenant, meski perannya
+memegang `*:*` — penolakan mengalahkan pemberian, jadi pemisahan ini tidak dapat dilanggar
+tanpa menyunting definisi peran. Alasannya sederhana: pihak yang berutang tidak boleh menjadi
+pihak yang menyatakan utangnya lunas.
+
+Alur pembayaran manual (transfer bank), yang berlaku selama payment gateway belum dipilih:
+
+1. Pelanggan menekan tombol di *Langganan & Paket* → faktur terbit, ruang kerja **tetap**
+   terkunci, dan layar menyebutkan bahwa aktivasi menunggu pembayaran tercatat.
+2. Pelanggan mentransfer sesuai jumlah pada faktur.
+3. Operator membuka **Manajemen Tenant → Faktur menunggu pembayaran**, mengisi **nomor
+   referensi** mutasi rekening, lalu menekan *Catat pembayaran*. Nomor referensi **wajib** —
+   pencatatan yang tidak dapat dicocokkan dengan mutasi tidak dapat ditinjau kemudian.
+4. Masa berlaku maju, ruang kerja terbuka, dan pelanggan menerima kabar lewat antrean
+   notifikasi (8.3).
+
+Dua hal yang perlu diketahui:
+
+- **Satu faktur hanya dapat dicatat sekali.** Mencatat dua kali akan memajukan masa berlaku
+  dua siklus untuk satu uang yang masuk, jadi percobaan kedua ditolak.
+- **Webhook DITOLAK selama `VANTIK_PAYMENT_WEBHOOK_SECRET` kosong.** Tanpa penjagaan itu,
+  tanda tangan yang sah adalah HMAC dengan kunci kosong — yang dapat dihitung siapa pun yang
+  tahu rahasianya belum diisi. Jalur ini menyatakan faktur lunas, jadi terbuka tanpa sengaja
+  bukan pilihan.
+
+Setiap pencatatan tercatat di **Log Aktivitas tenant yang dibayar** — bukan tenant
+operatornya — ditandai sebagai akses operator, lengkap dengan nomor referensinya. Jadi
+pelanggan dapat memeriksa sendiri riwayat pembayarannya.
+
+> **Bila Anda memperbarui dari versi sebelumnya:** izin peran standar disegarkan dari kode
+> setiap kali aplikasi menyala, jadi pengetatan ini berlaku **setelah restart** — termasuk
+> untuk tenant yang sudah ada. Sebelumnya izin peran hanya ditulis sekali saat tenant dibuat,
+> sehingga pengetatan keamanan di kode tidak pernah sampai ke pelanggan lama. Peran **kustom**
+> milik tenant tidak disentuh.
 
 #### 8.1e Uji coba gratis: MATI secara bawaan
 

@@ -906,6 +906,42 @@ export const dictionary = {
     'Ruang kerja belum pernah aktif. Selesaikan pembayaran pertama untuk membuka penulisan — data yang sudah ada tetap utuh.',
     'This workspace has never been active. Complete the first payment to unlock writing — existing data stays intact.',
   ],
+  'action.request_renewal_for': [
+    'Terbitkan faktur perpanjangan {cycle} — {price}',
+    'Issue renewal invoice {cycle} — {price}',
+  ],
+  'action.request_activation_for': [
+    'Terbitkan faktur aktivasi {cycle} — {price}',
+    'Issue activation invoice {cycle} — {price}',
+  ],
+  'action.record_payment': ['Catat pembayaran', 'Record payment'],
+  'ui.invoice_issued': [
+    'Faktur {number} sudah diterbitkan sebesar {total}.',
+    'Invoice {number} has been issued for {total}.',
+  ],
+  'ui.invoice_awaiting_payment': [
+    'Ruang kerja terbuka setelah pembayarannya tercatat. Kirimkan bukti transfer bila diminta; admin platform akan mencocokkannya dengan mutasi rekening.',
+    'The workspace opens once the payment is recorded. Send proof of transfer if asked; a platform admin will match it against the bank statement.',
+  ],
+  'ui.unpaid_invoices': ['Faktur menunggu pembayaran', 'Invoices awaiting payment'],
+  'ui.unpaid_invoices_none': ['Tidak ada faktur yang menunggu pembayaran.', 'No invoices are awaiting payment.'],
+  'ui.invoice_number': ['Nomor faktur', 'Invoice number'],
+  'ui.invoice_total': ['Jumlah', 'Amount'],
+  'ui.payment_reference': ['Nomor referensi', 'Reference number'],
+  'ui.payment_reference_hint': ['Nomor mutasi / bukti transfer', 'Bank statement or transfer reference'],
+  'ui.first_payment': ['pembayaran pertama', 'first payment'],
+  'error.payment_reference_required': [
+    'Nomor referensi wajib diisi — tanpa itu pembayaran tidak dapat dicocokkan dengan mutasi rekening.',
+    'A reference number is required — without it the payment cannot be matched against the bank statement.',
+  ],
+  'error.invoice_already_paid': [
+    'Faktur ini sudah tercatat dibayar. Mencatatnya dua kali akan memajukan masa berlaku dua kali untuk satu pembayaran.',
+    'This invoice is already recorded as paid. Recording it twice would extend the term twice for one payment.',
+  ],
+  'error.payment_webhook_not_configured': [
+    'Webhook payment gateway belum dikonfigurasi, jadi pemberitahuan pembayaran ditolak.',
+    'The payment gateway webhook is not configured, so payment notifications are refused.',
+  ],
   'action.activate_for': ['Aktifkan {cycle} — {price}', 'Activate {cycle} — {price}'],
   'ui.subscription_renew_hint': [
     'Perpanjang untuk membuka kembali penulisan. Data Anda tetap utuh selama masa ini.',

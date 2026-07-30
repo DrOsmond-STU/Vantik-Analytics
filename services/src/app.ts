@@ -12,6 +12,7 @@ import cookieParser from 'cookie-parser';
 
 import { AuditService } from './audit-service/index.ts';
 import { openDatabase, type Db, type DbPaths } from './platform/db.ts';
+import { PlatformBillingService } from './billing-service/settlement.ts';
 import { NotificationOutbox } from './platform/outbox.ts';
 import { OutboxDispatcher } from './platform/outboxDispatcher.ts';
 import { Scheduler, SCHEDULER_INTERVAL_MS, type JobRunner } from './platform/scheduler.ts';
@@ -115,6 +116,14 @@ export function createApp(options: AppOptions = {}): VantikApp {
 
   const auth = new AuthService(db, audit, outbox);
   const tenants = new TenantService(db, audit);
+  /**
+   * Billing sisi platform: lintas tenant, dan sengaja TERPISAH dari `BillingService`.
+   *
+   * `BillingService` bekerja di dalam satu tenant dan dipakai pelanggan; layanan ini bekerja
+   * di atas seluruh tenant dan dipakai operator. Memisahkannya membuat wewenang menyatakan
+   * pembayaran tidak pernah kebetulan berada di tangan pihak yang berutang.
+   */
+  const platformBilling = new PlatformBillingService(db, audit);
   tenants.seedPlans();
 
   const deps: HttpDeps = { db, audit, auth };
@@ -1188,12 +1197,15 @@ export function createApp(options: AppOptions = {}): VantikApp {
    * Perpanjangan.
    *
    * Satu-satunya rute tulis yang tetap dapat dipanggil saat ruang kerja terkunci karena
-   * masa berlaku habis — lihat `BillingService.renew()`. Tanpa pengecualian itu, blokir
-   * mengunci pintu keluarnya sendiri.
+   * masa berlaku habis — lihat `BillingService.requestRenewal()`. Tanpa pengecualian itu,
+   * blokir mengunci pintu keluarnya sendiri.
+   *
+   * Yang dikembalikan adalah FAKTUR, bukan langganan yang sudah diperpanjang: pelanggan
+   * tidak dapat menyatakan pembayarannya sendiri. Masa berlaku maju hanya setelah webhook
+   * gateway bertanda tangan atau operator platform mencatat pembayarannya.
    */
   api.post('/subscription/renew', (req, res) => {
-    const body = req.body as { paymentToken: string; paymentMethodLabel: string };
-    res.json(billingOf(req).renew(body.paymentToken, body.paymentMethodLabel));
+    res.json({ invoice: billingOf(req).requestRenewal() });
   });
   api.get('/invoices', (req, res) => {
     res.json({ invoices: billingOf(req).listInvoices() });
@@ -1226,6 +1238,52 @@ export function createApp(options: AppOptions = {}): VantikApp {
 
   api.get('/tenants/pending', (req, res) => {
     res.json({ registrations: tenants.listPendingRegistrations(requireContext(req)) });
+  });
+
+  /**
+   * Antrean faktur yang menunggu pembayaran, lintas tenant.
+   *
+   * Inilah antrean kerja operator. Tanpa daftar ini, pencatatan pembayaran hanya mungkin
+   * bila seseorang sudah mengetahui nomor fakturnya — dan pembayaran yang tidak tercatat
+   * berarti pelanggan yang sudah transfer tetap terkunci.
+   */
+  api.get('/system/invoices/unpaid', (req, res) => {
+    res.json({ invoices: platformBilling.listUnpaid(requireContext(req)) });
+  });
+
+  /**
+   * Mencatat pembayaran yang benar-benar diterima.
+   *
+   * Butuh `billing:settle`, yang secara eksplisit DITOLAK untuk Super Admin tenant meski ia
+   * memegang `*:*`: pihak yang berutang tidak boleh menjadi pihak yang menyatakan utangnya
+   * lunas. Nomor referensi wajib, supaya pencatatannya dapat dicocokkan dengan mutasi
+   * rekening dan ditinjau kemudian.
+   */
+  api.post('/system/invoices/:id/payment', (req, res) => {
+    const ctx = requireContext(req);
+    const body = req.body as { reference?: string; methodLabel?: string };
+    const invoice = platformBilling.recordPayment(ctx, req.params.id!, {
+      reference: String(body.reference ?? ''),
+      methodLabel: String(body.methodLabel ?? ''),
+    });
+
+    // Pelanggan diberi tahu bahwa ruang kerjanya sudah terbuka. Tanpa kabar ini ia harus
+    // menebak apakah transfernya sudah diterima, dan menebak berarti menghubungi dukungan.
+    const contact = tenants.registrationContact(invoice.tenant_id);
+    if (contact) {
+      outbox.enqueue({
+        tenantId: invoice.tenant_id,
+        purpose: 'payment_recorded',
+        channel: 'email',
+        recipient: contact.email,
+        subject: `[Vantik] Pembayaran diterima — ${contact.tenantName}`,
+        body:
+          `Pembayaran untuk faktur ${invoice.number} sudah tercatat.\n\n` +
+          `Ruang kerja aktif sampai ${invoice.period_end.slice(0, 10)}.`,
+      });
+    }
+
+    res.json({ invoice });
   });
 
   /**

@@ -794,10 +794,29 @@ export class DeviceService {
 
 /** Menanam 13 peran standar (idempoten). Dipanggil saat bootstrap & provisioning tenant. */
 export function seedStandardRoles(db: import('../platform/db.ts').Db): void {
+  /**
+   * MENIMPA izin peran standar, bukan hanya menyisipkan bila belum ada.
+   *
+   * Sebelumnya `INSERT OR IGNORE`, dan akibatnya baru terlihat saat sebuah pengetatan
+   * keamanan ditambahkan ke `STANDARD_ROLES`: instalasi yang sudah berjalan menyimpan
+   * salinan izin lama di tabel `roles`, sehingga pengetatan itu TIDAK PERNAH berlaku bagi
+   * pelanggan yang ada. Definisi peran di kode dan yang ditegakkan di basis data diam-diam
+   * bercabang, dan yang menang adalah yang lama — kegagalan paling buruk untuk kontrol
+   * keamanan, karena kodenya terbaca benar.
+   *
+   * Hanya baris `is_standard = 1` yang disentuh. Peran kustom milik tenant tidak pernah
+   * ditimpa: itu konfigurasi pelanggan, bukan katalog bawaan.
+   */
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO roles (id, tenant_id, code, name_id, name_en, is_standard,
-                                  permissions_json, denials_json, created_at)
-     VALUES (?, NULL, ?, ?, ?, 1, ?, ?, ?)`,
+    `INSERT INTO roles (id, tenant_id, code, name_id, name_en, is_standard,
+                        permissions_json, denials_json, created_at)
+     VALUES (?, NULL, ?, ?, ?, 1, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name_id          = excluded.name_id,
+       name_en          = excluded.name_en,
+       permissions_json = excluded.permissions_json,
+       denials_json     = excluded.denials_json
+     WHERE roles.is_standard = 1`,
   );
   const at = nowIso();
   for (const role of STANDARD_ROLES) {

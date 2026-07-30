@@ -45,7 +45,7 @@ dilakukan — perilaku yang disengaja (SECURITY.md Bagian 4), bukan kerusakan.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 557 test (510 backend + 47 komponen web)
+npm test              # 573 test (526 backend + 47 komponen web)
 npm run test:coverage # backend dengan ambang cakupan
 npm run test:web      # hanya uji komponen/DOM web app
 ```
@@ -166,7 +166,7 @@ PRD Bagian 12 masih menyisakan keputusan bisnis. Yang diasumsikan sementara di k
 |---|---|
 | LLM eksternal atau self-hosted? | Platform berfungsi **penuh tanpa LLM** (penyedia deterministik). Penyedia eksternal opsional dan datanya dimasking lebih dulu. |
 | Harga final tiap paket & diskon per jangka waktu | Angka indikatif di `BILLING_CYCLES` & `PLAN_CATALOG` (`featureFlags.ts`); satu tempat, dihitung server. Tidak dipakai untuk penagihan nyata. |
-| Payment gateway mana | Diabstraksi sebagai webhook terverifikasi tanda tangan; tidak terikat vendor. |
+| Payment gateway mana | Diabstraksi sebagai webhook terverifikasi tanda tangan; tidak terikat vendor. Selama belum dipilih, pembayaran dicatat operator platform (`billing:settle`) — **pelanggan tidak dapat menyatakan pembayarannya sendiri**. |
 | Lama uji coba gratis | **Dimatikan** (`VANTIK_TRIAL_DAYS=0`). Ruang kerja baru dapat dibaca tetapi belum dapat menulis sampai pembayaran pertama tercatat. |
 | Retensi Log Aktivitas | Fungsi arsip tersedia; kebijakan retensi belum dipatok. |
 | Retensi data pasca-berhenti langganan | 90 hari (`POST_CANCELLATION_RETENTION_DAYS`). |
@@ -231,6 +231,7 @@ pelanggaran baru di masa depan.
 | `tests/transports.test.ts` | Penolakan transport notifikasi di tingkat socket — server tanpa STARTTLS membuat pengiriman **dibatalkan** sehingga kata sandi maupun isi OTP tidak pernah menyentuh kabel, alasan kegagalan tidak membocorkan kredensial ke tabel outbox, dan kanal setengah terkonfigurasi tidak diaktifkan |
 | `tests/smtp-delivery.test.ts` | Pengiriman SMTP yang **berhasil**, diperiksa di kabel: urutan EHLO → STARTTLS → EHLO → AUTH, kredensial yang tidak pernah dikirim sebelum lapisan aman diminta, subjek non-ASCII yang disandikan RFC 2047, baris berawalan titik yang tidak memotong pesan, dan penyisipan `Bcc:` yang terbukti gagal pada pesan yang benar-benar sampai |
 | `tests/outbox-dispatch.test.ts` | Antrean notifikasi benar-benar terkuras: pesan berpindah ke `sent`, isi OTP dihapus setelah terkirim, gangguan sesaat tidak langsung dianggap permanen, kanal yang belum dikonfigurasi **dilewati tanpa menghabiskan batas percobaan** sehingga isinya tetap dapat dibaca operator, dan dua sapuan yang bertemu tidak mengirim pesan yang sama dua kali |
+| `tests/payment-settlement.test.ts` | Wewenang menyatakan faktur dibayar: permintaan perpanjangan hanya **menerbitkan faktur** tanpa memajukan masa berlaku, Super Admin tenant **tidak dapat** mencatat pembayarannya sendiri meski memegang `*:*`, nomor referensi wajib, satu faktur hanya dapat dicatat sekali, dan webhook ditolak selama rahasianya belum dikonfigurasi |
 | `tests/trial-disabled.test.ts` | Uji coba gratis mati secara bawaan: ruang kerja baru dapat dibaca tetapi tidak dapat menulis, blokirnya berlaku sejak permintaan pertama tanpa menunggu penjadwal, pesannya berbunyi **belum aktif** alih-alih kedaluwarsa, dan langganan yang sudah berjalan tidak ikut terkunci |
 | `tests/subscription-lifecycle.test.ts` | Siklus 1/3/6/12 bulan, invarian harga katalog↔kalkulator, penjepitan tanggal akhir bulan, dan penghentian otomatis saat masa berlaku habis — termasuk bahwa blokirnya **tidak menunggu penjadwal** dan bahwa perpanjangan tetap dapat dilakukan saat ruang kerja terkunci |
 

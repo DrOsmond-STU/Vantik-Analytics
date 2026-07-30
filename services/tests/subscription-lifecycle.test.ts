@@ -23,6 +23,7 @@ import {
   type TenantFixture,
 } from './helpers.ts';
 import { BillingService, GRACE_PERIOD_DAYS, periodEndFor } from '../src/billing-service/index.ts';
+import { PlatformBillingService } from '../src/billing-service/settlement.ts';
 import { MeteringService } from '../src/metering-service/index.ts';
 import { NotificationOutbox } from '../src/platform/outbox.ts';
 import { addMonths } from '../src/platform/db.ts';
@@ -72,6 +73,23 @@ function setPeriod(fixture: TenantFixture, changes: Record<string, string | numb
   harness.db
     .prepare(`UPDATE subscriptions SET ${columns} WHERE tenant_id = ?`)
     .run(...Object.values(changes), fixture.tenantId);
+}
+
+/**
+ * Perpanjangan LENGKAP: pelanggan meminta faktur, operator mencatat pembayarannya.
+ *
+ * Dua langkah karena memang dua pihak. Sebelumnya satu panggilan `renew()` melakukan
+ * keduanya sekaligus — pelanggan menyatakan sendiri fakturnya lunas — dan itulah yang
+ * ditutup: `billing:settle` ditolak untuk Super Admin tenant, jadi uji ini pun tidak dapat
+ * memakai jalan pintas yang sudah tidak ada.
+ */
+function perpanjang(fixture: TenantFixture = tenant, reference = 'REF-UJI-0001'): void {
+  const invoice = billing(fixture).requestRenewal();
+  const operator = contextFor(harness, fixture.tenantId, ['platform_operator'], { mfaEnrolled: true });
+  new PlatformBillingService(harness.db, harness.audit).recordPayment(operator, invoice.id, {
+    reference,
+    methodLabel: 'Transfer bank',
+  });
 }
 
 function daysFromNow(days: number): string {
@@ -430,7 +448,7 @@ describe('Perpanjangan', () => {
     expect(cobaMenulis(tiga)?.messageKey).toBe('error.subscription_expired');
 
     billing(tiga).enforceLifecycle(); // menerbitkan faktur perpanjangan
-    billing(tiga).renew('tok_gateway_uji', 'VISA •••• 4321');
+    perpanjang(tiga);
 
     const sub = subscriptionRow(tiga);
     expect(sub.status).toBe('active');
@@ -451,7 +469,7 @@ describe('Perpanjangan', () => {
     billing().enforceLifecycle();
     expect(tenantStatus()).toBe('suspended');
 
-    billing().renew('tok_gateway_uji', 'Transfer bank');
+    perpanjang();
     expect(tenantStatus()).toBe('active');
     expect(cobaMenulis()).toBeNull();
   });
@@ -460,7 +478,7 @@ describe('Perpanjangan', () => {
     const akhir = daysFromNow(10);
     setPeriod(tenant, { status: 'active', trial_ends_at: null, current_period_end: akhir });
 
-    billing().renew('tok_awal', 'VISA •••• 1111');
+    perpanjang();
 
     const sub = subscriptionRow(tenant);
     // Tidak ada hari yang hangus: periode baru mulai persis di akhir periode lama.
@@ -517,7 +535,7 @@ describe('Perpanjangan', () => {
 
     setPeriod(tenant, { status: 'active', trial_ends_at: null, current_period_end: daysFromNow(-1) });
     billing().enforceLifecycle();
-    billing().renew('tok_siklus_baru', 'Transfer bank');
+    perpanjang();
 
     const sub = subscriptionRow(tenant);
     expect(sub.plan_code).toBe('starter');
@@ -532,7 +550,7 @@ describe('Perpanjangan', () => {
     // baca-saja.
     setPeriod(tenant, { status: 'active', trial_ends_at: null, current_period_end: daysFromNow(-95) });
     billing().enforceLifecycle();
-    billing().renew('tok_telat', 'Transfer bank');
+    perpanjang();
 
     const sub = subscriptionRow(tenant);
     expect(Date.parse(String(sub.current_period_end))).toBeGreaterThan(Date.now());
