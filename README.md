@@ -45,7 +45,7 @@ dilakukan — perilaku yang disengaja (SECURITY.md Bagian 4), bukan kerusakan.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 502 test (455 backend + 47 komponen web)
+npm test              # 546 test (499 backend + 47 komponen web)
 npm run test:coverage # backend dengan ambang cakupan
 npm run test:web      # hanya uji komponen/DOM web app
 ```
@@ -146,11 +146,13 @@ Dinyatakan terbuka, bukan disembunyikan:
   (`error.xlsx_conversion_required`), bukan diam-diam menghasilkan dataset kosong.
 - **Driver koneksi eksternal nyata** — `ConnectionProbe` memvalidasi bentuk konfigurasi;
   implementasi driver PostgreSQL/MySQL/Oracle/REST dipasang lewat antarmuka yang sama.
-- **Pengiriman notifikasi nyata** — `QueueOnlyTransport` mengantre tanpa mengirim, dan
-  **menyatakannya**: `delivers = false`, statusnya tetap `queued`, dan antreannya terlihat
-  di `GET /api/v1/notifications/outbox`. SMTP/WhatsApp/Telegram/SMS/Teams/Slack dipasang
-  lewat `NotificationTransport`. Sampai itu dipasang, OTP pemindahan perangkat menunggu di
-  outbox dan Admin harus menyampaikannya.
+- **Kredensial pengiriman notifikasi** — transportnya **sudah ada** untuk email (SMTP),
+  WhatsApp, dan Telegram (`services/src/platform/transports.ts`), tetapi nilainya kosong
+  sampai operator mengisinya di `.env` (lihat panduan pemasangan §8.3). Kanal yang belum
+  diisi tidak berpura-pura: `QueueOnlyTransport` menyatakan `delivers = false`, statusnya
+  tetap `queued`, dan antreannya terlihat di `GET /api/v1/notifications/outbox` — jadi OTP
+  pemindahan perangkat menunggu di sana sampai SMTP diisi. SMS/Teams/Slack dipasang lewat
+  antarmuka `NotificationTransport` yang sama.
 - **SSO SAML/OIDC** — skema & kolom `auth_provider` sudah ada; alur federasi belum. (MFA berbasis TOTP **sudah** ada — lihat tabel kontrol keamanan.)
 - **Ingest MQTT** — Digital Twin menerima pembacaan sensor lewat REST; gateway MQTT belum.
 - **Ekspor PDF biner** — `renderDocument()` mengembalikan struktur dokumen; render PDF
@@ -226,6 +228,9 @@ pelanggaran baru di masa depan.
 | `tests/presentation.test.ts` | Angka korporat memakai agregat lintas dimensi, tren tidak mencampur dimensi, cakupan per divisi, dan penegakan baca-saja pada Balanced Scorecard |
 | `tests/retention.test.ts` | Pemangkasan tabel yang terus tumbuh — termasuk bahwa sesi yang masih hidup dan pesan outbox `queued`/`failed` **tidak pernah** dibuang, bahwa baris tanpa tenant ikut terpangkas, dan bahwa trigger append-only pada `audit_log`/`usage_events` memang menolak DELETE sehingga pengecualiannya bukan sekadar klaim |
 | `tests/registration-approval.test.ts` | Pendaftaran mandiri menunggu persetujuan admin — termasuk bahwa pendaftar **tidak dapat menyetujui dirinya sendiri** meski perannya `super_admin`, bahwa tenant lama tidak ikut terkunci migrasi, dan bahwa penolakan menyimpan alasan tanpa menghapus data |
+| `tests/transports.test.ts` | Penolakan transport notifikasi di tingkat socket — server tanpa STARTTLS membuat pengiriman **dibatalkan** sehingga kata sandi maupun isi OTP tidak pernah menyentuh kabel, alasan kegagalan tidak membocorkan kredensial ke tabel outbox, dan kanal setengah terkonfigurasi tidak diaktifkan |
+| `tests/smtp-delivery.test.ts` | Pengiriman SMTP yang **berhasil**, diperiksa di kabel: urutan EHLO → STARTTLS → EHLO → AUTH, kredensial yang tidak pernah dikirim sebelum lapisan aman diminta, subjek non-ASCII yang disandikan RFC 2047, baris berawalan titik yang tidak memotong pesan, dan penyisipan `Bcc:` yang terbukti gagal pada pesan yang benar-benar sampai |
+| `tests/outbox-dispatch.test.ts` | Antrean notifikasi benar-benar terkuras: pesan berpindah ke `sent`, isi OTP dihapus setelah terkirim, gangguan sesaat tidak langsung dianggap permanen, kanal yang belum dikonfigurasi **dilewati tanpa menghabiskan batas percobaan** sehingga isinya tetap dapat dibaca operator, dan dua sapuan yang bertemu tidak mengirim pesan yang sama dua kali |
 | `tests/subscription-lifecycle.test.ts` | Siklus 1/3/6/12 bulan, invarian harga katalog↔kalkulator, penjepitan tanggal akhir bulan, dan penghentian otomatis saat masa berlaku habis — termasuk bahwa blokirnya **tidak menunggu penjadwal** dan bahwa perpanjangan tetap dapat dilakukan saat ruang kerja terkunci |
 
 Uji komponen/DOM web app berada di `frontend/web-app/tests/` (proyek vitest tersendiri,

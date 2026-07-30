@@ -32,6 +32,20 @@ export class NotificationOutbox {
   constructor(private readonly db: Db) {}
 
   /**
+   * Dipanggil setiap kali ada pesan masuk antrean.
+   *
+   * Ada supaya pengiriman dapat dimulai segera setelah pesan dibuat tanpa setiap pemanggil
+   * `enqueue()` harus tahu soal transport: OTP yang baru berguna dalam beberapa menit tidak
+   * boleh menunggu putaran penjadwal berikutnya. Bila tidak ada yang memasangnya, perilaku
+   * lama tidak berubah sama sekali — pesan hanya tersimpan.
+   */
+  private dispatchHook: (() => void) | null = null;
+
+  setDispatchHook(hook: () => void): void {
+    this.dispatchHook = hook;
+  }
+
+  /**
    * Memasukkan pesan ke antrean.
    *
    * `sensitive` menandai pesan yang isinya adalah rahasia sekali pakai (OTP), supaya
@@ -66,12 +80,30 @@ export class NotificationOutbox {
         input.sensitive ? 1 : 0,
         nowIso(),
       );
+    // Setelah baris tersimpan, bukan sebelum: pengirim yang berjalan lebih dulu tidak akan
+    // menemukan apa pun untuk dikirim.
+    this.dispatchHook?.();
     return id;
   }
 
+  /**
+   * Menandai terkirim. Isi pesan SENSITIF dihapus di sini.
+   *
+   * Sebelum ada transport, badan OTP harus tetap tersimpan — itu satu-satunya salinan yang
+   * dapat dibacakan Admin. Setelah benar-benar terkirim, ia berhenti menjadi jalan
+   * pemulihan dan tinggal menjadi rahasia yang mengendap di basis data. Pengguna yang tidak
+   * menerima emailnya dapat meminta kode baru; kode lama yang tersimpan tidak menolong
+   * siapa pun kecuali yang membaca basis data.
+   */
   markSent(id: string): void {
     this.db
-      .prepare("UPDATE notification_outbox SET status = 'sent', sent_at = ?, attempts = attempts + 1 WHERE id = ?")
+      .prepare(
+        `UPDATE notification_outbox
+            SET status = 'sent', sent_at = ?, attempts = attempts + 1,
+                failure_reason = NULL,
+                body = CASE WHEN sensitive = 1 THEN '' ELSE body END
+          WHERE id = ?`,
+      )
       .run(nowIso(), id);
   }
 
@@ -79,6 +111,51 @@ export class NotificationOutbox {
     this.db
       .prepare("UPDATE notification_outbox SET status = 'failed', failure_reason = ?, attempts = attempts + 1 WHERE id = ?")
       .run(reason, id);
+  }
+
+  /**
+   * Mencatat satu percobaan yang gagal, dan menyerah hanya setelah batas percobaan.
+   *
+   * Statusnya tetap `queued` selama masih ada percobaan tersisa, karena "failed" pada
+   * percobaan pertama akan membuat gangguan sesaat pada server email terlihat permanen —
+   * dan menghentikan percobaan ulang untuk pesan yang sebenarnya masih dapat terkirim.
+   *
+   * Mengembalikan status akhir baris agar pemanggil dapat melaporkannya.
+   */
+  recordFailure(id: string, reason: string, maxAttempts: number): OutboxStatus {
+    this.db
+      .prepare(
+        `UPDATE notification_outbox
+            SET attempts = attempts + 1,
+                failure_reason = ?,
+                status = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'queued' END
+          WHERE id = ?`,
+      )
+      .run(reason, maxAttempts, id);
+    const row = this.db.prepare('SELECT status FROM notification_outbox WHERE id = ?').get(id) as
+      | { status: OutboxStatus }
+      | undefined;
+    return row?.status ?? 'failed';
+  }
+
+  /**
+   * Pesan menunggu dari SELURUH tenant, untuk pengirim yang berjalan global.
+   *
+   * Diurutkan menurut jumlah percobaan lebih dulu, baru umur: tanpa itu, beberapa alamat
+   * yang selalu gagal akan mengisi setiap batch dan OTP yang baru dibuat tidak pernah
+   * mendapat giliran.
+   */
+  pendingAll(limit = 50): Array<OutboxEntry & { tenant_id: string; body: string }> {
+    return this.db
+      .prepare(
+        `SELECT id, tenant_id, purpose, channel, recipient, subject, body, status, attempts,
+                failure_reason, sensitive, created_at, sent_at
+           FROM notification_outbox
+          WHERE status = 'queued'
+          ORDER BY attempts ASC, created_at ASC
+          LIMIT ?`,
+      )
+      .all(limit) as Array<OutboxEntry & { tenant_id: string; body: string }>;
   }
 
   /** Pesan yang masih menunggu transport, terlama lebih dulu. */

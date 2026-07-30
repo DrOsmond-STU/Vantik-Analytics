@@ -13,8 +13,10 @@ import cookieParser from 'cookie-parser';
 import { AuditService } from './audit-service/index.ts';
 import { openDatabase, type Db, type DbPaths } from './platform/db.ts';
 import { NotificationOutbox } from './platform/outbox.ts';
+import { OutboxDispatcher } from './platform/outboxDispatcher.ts';
 import { Scheduler, SCHEDULER_INTERVAL_MS, type JobRunner } from './platform/scheduler.ts';
 import { pruneExpiredRows, retentionReport } from './platform/retention.ts';
+import { transportFromEnv, type ChannelRoutingTransport } from './platform/transports.ts';
 import { KeyRing } from './platform/crypto.ts';
 import { ValidationError } from './platform/errors.ts';
 import {
@@ -91,9 +93,26 @@ export function createApp(options: AppOptions = {}): VantikApp {
    * Sebelumnya setiap pemanggilan membangun stub-nya sendiri, sehingga memasang transport
    * nyata berarti menyunting tiga tempat dan berisiko satu terlewat — satu jalur notifikasi
    * yang masih memakai stub tidak akan memunculkan kesalahan apa pun, hanya pesan yang
-   * tidak pernah terkirim. Ganti baris ini saja untuk mengaktifkan pengiriman nyata.
+   * tidak pernah terkirim.
+   *
+   * Kanal nyata (email/WhatsApp/Telegram) dirakit dari variabel lingkungan. Bila TIDAK ADA
+   * yang dikonfigurasi — keadaan bawaan — perilakunya persis seperti sebelumnya: mengantre
+   * tanpa mengirim, dan mengatakannya. Tidak ada baris kode yang perlu disunting untuk
+   * mengaktifkan pengiriman; cukup mengisi `.env`.
    */
-  const notificationTransport: NotificationTransport = new QueueOnlyTransport();
+  const notificationTransport: NotificationTransport = transportFromEnv() ?? new QueueOnlyTransport();
+
+  /**
+   * Pengirim antrean.
+   *
+   * `attach()` membuat pesan mulai dikirim segera setelah masuk antrean — tanpa itu, OTP
+   * pemindahan perangkat baru terkirim pada putaran penjadwal berikutnya, dan jalur
+   * pemulihan yang benar akan terasa rusak. Bila tidak ada kanal terkonfigurasi, `attach()`
+   * tidak memasang apa pun dan tidak ada satu pun percakapan jaringan yang dimulai.
+   */
+  const outboxDispatcher = new OutboxDispatcher(outbox, notificationTransport);
+  outboxDispatcher.attach();
+
   const auth = new AuthService(db, audit, outbox);
   const tenants = new TenantService(db, audit);
   tenants.seedPlans();
@@ -1567,6 +1586,19 @@ export function createApp(options: AppOptions = {}): VantikApp {
        * terdaftar), dan pemangkasan per-tenant akan meninggalkannya tumbuh selamanya.
        */
       'retention.prune': (database) => pruneExpiredRows(database).total,
+
+      /**
+       * Pengurasan antrean notifikasi.
+       *
+       * Juga GLOBAL: antreannya satu untuk seluruh instalasi, dan menjalankannya per tenant
+       * berarti satu server SMTP yang lambat membuat tenant terakhir menunggu giliran.
+       *
+       * Diperlukan meski pengiriman sudah dimulai saat pesan masuk antrean: Passenger
+       * mematikan proses yang idle, sehingga pengiriman yang dimulai di jalur permintaan
+       * dapat mati di tengah jalan. Sapuan inilah yang membuat pesan yang tertinggal
+       * akhirnya tetap terkirim.
+       */
+      'notification.dispatch': async () => (await outboxDispatcher.dispatchDue()).sent,
     },
   );
 
@@ -1586,6 +1618,24 @@ export function createApp(options: AppOptions = {}): VantikApp {
    *
    * Butuh `platform:health` — angka ini menyangkut seluruh instalasi, bukan satu tenant.
    */
+  /**
+   * Kanal notifikasi yang benar-benar terkonfigurasi.
+   *
+   * Ada supaya operator dapat memastikan `.env`-nya terbaca TANPA harus memancing sebuah
+   * notifikasi nyata lebih dulu. Yang dilaporkan hanya NAMA kanal — tidak ada host, tidak
+   * ada pengirim, dan tentu tidak ada token; laporan konfigurasi yang membocorkan
+   * kredensialnya sendiri bukan bantuan.
+   */
+  api.get('/system/notification-channels', (req, res) => {
+    const ctx = requireContext(req);
+    ctx.require('device:read', { module: 'Perangkat & Sesi' });
+    const routing = notificationTransport as Partial<ChannelRoutingTransport>;
+    res.json({
+      delivers: notificationTransport.delivers,
+      channels: routing.configuredChannels?.() ?? [],
+    });
+  });
+
   api.get('/system/retention', (req, res) => {
     const ctx = requireContext(req);
     ctx.require('platform:health', { module: 'Manajemen Tenant' });
