@@ -48,7 +48,7 @@ export const dictionary = {
   'action.mfa_new_recovery_codes': ['Terbitkan kode pemulihan baru', 'Issue new recovery codes'],
   'action.copy': ['Salin', 'Copy'],
   'action.password_change': ['Ganti Kata Sandi', 'Change Password'],
-  'action.start_trial': ['Coba Gratis 14 Hari', 'Start 14-Day Free Trial'],
+  'action.start_trial': ['Berlangganan', 'Subscribe'],
   'action.subscribe': ['Berlangganan', 'Subscribe'],
   'action.forgot_password': ['Lupa kata sandi?', 'Forgot your password?'],
   'action.back_to_home': ['Kembali ke halaman depan', 'Back to home'],
@@ -320,6 +320,14 @@ export const dictionary = {
   'error.billing_cycle_unknown': [
     'Jangka waktu berlangganan tidak dikenali.',
     'That subscription term is not recognised.',
+  ],
+  'error.subscription_unpaid': [
+    'Ruang kerja ini belum aktif — pembayaran pertama belum tercatat. Data dapat dilihat dan diunduh, tetapi perubahan belum dapat disimpan.',
+    'This workspace is not active yet — no first payment has been recorded. Data can be viewed and downloaded, but changes cannot be saved yet.',
+  ],
+  'recovery.activate_subscription': [
+    'Buka Manajemen Langganan & Paket untuk menyelesaikan pembayaran. Hubungi admin bila pembayaran sudah dikirim tetapi belum tercatat.',
+    'Open Subscription Management to complete payment. Contact the admin if you have paid but it is not recorded yet.',
   ],
   'recovery.renew_subscription': [
     'Buka Manajemen Langganan & Paket, lalu perpanjang untuk membuka kembali penulisan.',
@@ -818,8 +826,8 @@ export const dictionary = {
     'One place for data, KPIs, statistical analysis, and reporting — with an audit trail nobody can alter, administrators included.',
   ],
   'ui.landing_trial_note': [
-    'Uji coba 14 hari. Tanpa kartu kredit, dan datanya tetap milik Anda.',
-    'A 14-day trial. No credit card, and the data stays yours.',
+    'Pendaftaran ditinjau admin lebih dulu. Ruang kerja aktif setelah pembayaran, dan datanya tetap milik Anda.',
+    'Registrations are reviewed by an admin first. The workspace activates after payment, and the data stays yours.',
   ],
   'ui.landing_modules_title': ['Yang Anda dapatkan', 'What you get'],
   'ui.landing_modules_sub': [
@@ -860,8 +868,8 @@ export const dictionary = {
   'ui.plan_ai': ['Panggilan AI per bulan: {value}', 'AI calls per month: {value}'],
   'ui.signup_title': ['Buat ruang kerja', 'Create your workspace'],
   'ui.signup_sub': [
-    'Ruang kerja langsung aktif dalam mode uji coba. Anda menjadi administrator pertamanya.',
-    'Your workspace starts immediately in trial mode. You become its first administrator.',
+    'Anda menjadi administrator pertamanya. Pendaftaran ditinjau admin, lalu ruang kerja aktif setelah pembayaran pertama.',
+    'You become its first administrator. Registrations are reviewed by an admin, then the workspace activates after the first payment.',
   ],
   'ui.signup_plan': ['Paket', 'Plan'],
   'ui.signup_cycle': ['Jangka waktu berlangganan', 'Subscription term'],
@@ -894,14 +902,19 @@ export const dictionary = {
     'Masa berlaku berakhir dalam {days} hari. Perpanjang sebelum tanggal itu agar ruang kerja tidak beralih ke mode baca-saja.',
     'Your term ends in {days} days. Renew before then to keep the workspace out of read-only mode.',
   ],
+  'ui.subscription_unpaid_hint': [
+    'Ruang kerja belum pernah aktif. Selesaikan pembayaran pertama untuk membuka penulisan — data yang sudah ada tetap utuh.',
+    'This workspace has never been active. Complete the first payment to unlock writing — existing data stays intact.',
+  ],
+  'action.activate_for': ['Aktifkan {cycle} — {price}', 'Activate {cycle} — {price}'],
   'ui.subscription_renew_hint': [
     'Perpanjang untuk membuka kembali penulisan. Data Anda tetap utuh selama masa ini.',
     'Renew to restore write access. Your data stays intact throughout.',
   ],
   'action.renew_for': ['Perpanjang {cycle} — {price}', 'Renew {cycle} — {price}'],
   'ui.signup_summary': [
-    'Setelah uji coba berakhir: {plan}, {price} per {cycle}. Dapat diubah atau dihentikan kapan saja.',
-    'After the trial ends: {plan}, {price} per {cycle}. Change or cancel any time.',
+    'Yang akan ditagihkan: {plan}, {price} per {cycle}. Dapat diubah atau dihentikan kapan saja.',
+    'What will be billed: {plan}, {price} per {cycle}. Change or cancel any time.',
   ],
   'ui.signup_org': ['Nama organisasi', 'Organisation name'],
   'ui.signup_slug': ['Alamat ruang kerja', 'Workspace address'],
@@ -912,8 +925,8 @@ export const dictionary = {
   'ui.signup_name': ['Nama Anda', 'Your name'],
   'ui.signup_done_title': ['Ruang kerja siap', 'Your workspace is ready'],
   'ui.signup_done_body': [
-    'Masuk memakai kode organisasi "{slug}" beserta email dan kata sandi yang baru saja Anda buat.',
-    'Sign in with organisation code "{slug}" and the email and password you just created.',
+    'Masuk memakai kode organisasi "{slug}" beserta email dan kata sandi yang baru saja Anda buat. Ruang kerja dapat dibuka dan dibaca; penulisan terbuka setelah pembayaran pertama tercatat.',
+    'Sign in with organisation code "{slug}" and the email and password you just created. The workspace opens and reads fine; writing unlocks once the first payment is recorded.',
   ],
   'ui.forgot_title': ['Lupa kata sandi', 'Forgot password'],
   'ui.forgot_sub': [

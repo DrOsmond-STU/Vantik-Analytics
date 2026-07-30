@@ -84,6 +84,9 @@ beforeAll(async () => {
       slug: 'e2edemo',
       planCode: 'enterprise',
       billingCycle: 'monthly',
+      // Uji coba gratis mati secara bawaan, jadi tenant baru lahir belum aktif dan tidak
+      // dapat menulis. Fixture ini menguji modul, bukan paywall — jadi ia berlangganan.
+      trialDays: 30,
       admin: { fullName: 'Admin E2E', nik: 'NIK-E2E-1', email: 'admin@e2e.test', password: TEST_PASSWORD },
     },
     'test',
@@ -94,6 +97,7 @@ beforeAll(async () => {
       slug: 'e2eother',
       planCode: 'enterprise',
       billingCycle: 'monthly',
+      trialDays: 30,
       admin: { fullName: 'Admin Lain', nik: 'NIK-E2E-2', email: 'admin@other.test', password: TEST_PASSWORD },
     },
     'test',

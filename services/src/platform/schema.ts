@@ -1155,6 +1155,28 @@ const REMAINING_MAIN_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_tenants_approval ON tenants(approval_status);
     `,
   },
+  {
+    id: '0015_paid_activation',
+    sql: `
+      -- Kapan langganan PERTAMA kali benar-benar dibayar.
+      --
+      -- Diperlukan untuk membedakan dua keadaan yang sama-sama "tidak boleh menulis"
+      -- tetapi butuh penjelasan yang sangat berbeda kepada pengguna:
+      --
+      --   NULL  = belum pernah aktif. Ruang kerja baru yang menunggu pembayaran pertama.
+      --           Mengatakan "masa berlaku habis" kepada pelanggan yang belum pernah
+      --           punya masa berlaku adalah pesan yang menyesatkan, dan pengguna akan
+      --           mencari tombol perpanjang untuk sesuatu yang belum pernah ada.
+      --   terisi = pernah aktif lalu kedaluwarsa. Inilah perpanjangan yang sesungguhnya.
+      --
+      -- Backfill DISENGAJA memakai created_at hanya untuk langganan yang berstatus
+      -- 'active': mereka sudah berjalan sebelum kolom ini ada, dan menandainya "belum
+      -- pernah aktif" akan membuat pelanggan lama tiba-tiba dianggap belum bayar.
+      -- Baris 'trialing' dibiarkan NULL — uji coba memang belum pernah dibayar.
+      ALTER TABLE subscriptions ADD COLUMN activated_at TEXT;
+      UPDATE subscriptions SET activated_at = created_at WHERE status = 'active';
+    `,
+  },
 ];
 
 /**

@@ -242,7 +242,7 @@ export interface Session {
     plan: string;
     readOnly: boolean;
     /** Mengapa baca-saja — menentukan langkah pemulihan yang ditawarkan antarmuka. */
-    readOnlyReason: 'subscription_expired' | 'tenant_status' | null;
+    readOnlyReason: 'subscription_unpaid' | 'subscription_expired' | 'tenant_status' | null;
     expiresAt: string | null;
     modules: Record<string, boolean>;
     quotas: Record<string, number>;

@@ -1491,6 +1491,7 @@ interface SubscriptionPayload {
     cycle_months: number;
     status: string;
     trial_ends_at: string | null;
+    activated_at: string | null;
     current_period_end: string;
     pending_plan_code: string | null;
     expires_at: string;
@@ -1565,7 +1566,12 @@ export function SubscriptionView(): JSX.Element {
 
               {/* Keadaan yang paling perlu dijelaskan, dijelaskan paling jelas: apa yang
                   terjadi sekarang, dan apa yang membukanya kembali. */}
-              {data.subscription.expired ? (
+              {data.subscription.expired && !data.subscription.activated_at ? (
+                <div className="note warn" style={{ marginTop: 12 }}>
+                  <div>{t('error.subscription_unpaid')}</div>
+                  <div style={{ marginTop: 6 }}>{t('ui.subscription_unpaid_hint')}</div>
+                </div>
+              ) : data.subscription.expired ? (
                 <div className="note warn" style={{ marginTop: 12 }}>
                   <div>{t('error.subscription_expired')}</div>
                   <div style={{ marginTop: 6 }}>{t('ui.subscription_renew_hint')}</div>
@@ -1582,7 +1588,7 @@ export function SubscriptionView(): JSX.Element {
                 <button type="button" className="btn primary" disabled={busy} onClick={() => void renew()}>
                   {busy
                     ? t('ui.loading')
-                    : t('action.renew_for', {
+                    : t(data.subscription.activated_at ? 'action.renew_for' : 'action.activate_for', {
                         cycle: t(`ui.cycle_${data.subscription.billing_cycle}`),
                         price: formatCurrency(data.subscription.price, locale),
                       })}

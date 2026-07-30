@@ -54,8 +54,18 @@ function billing(fixture: TenantFixture = tenant): BillingService {
   return new BillingService(ctx, new MeteringService(ctx), outbox);
 }
 
-/** Menggeser masa berlaku langganan ke masa lalu/depan tanpa melewati layanan. */
+/**
+ * Menggeser masa berlaku langganan ke masa lalu/depan tanpa melewati layanan.
+ *
+ * `activated_at` diisi bila pemanggil tidak menyebutnya: uji di berkas ini memodelkan
+ * pelanggan yang PERNAH membayar lalu masa berlakunya habis, dan itulah yang membedakan
+ * "kedaluwarsa" dari "belum pernah aktif". Ruang kerja yang belum pernah dibayar diuji
+ * tersendiri di `trial-disabled.test.ts`.
+ */
 function setPeriod(fixture: TenantFixture, changes: Record<string, string | number | null>): void {
+  if (!('activated_at' in changes)) {
+    changes = { ...changes, activated_at: new Date(Date.now() - 365 * 86_400_000).toISOString() };
+  }
   const columns = Object.keys(changes)
     .map((c) => `${c} = ?`)
     .join(', ');

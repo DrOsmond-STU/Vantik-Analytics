@@ -165,7 +165,12 @@ export default function App(): JSX.Element {
               tunggakan, dan langkah pemulihannya ada di layar pengguna — bukan sesuatu
               yang harus ia tanyakan ke dukungan. */}
           {session.flags.readOnly &&
-            (session.flags.readOnlyReason === 'subscription_expired' ? (
+            (session.flags.readOnlyReason === 'subscription_unpaid' ? (
+              <div className="note warn" style={{ marginBottom: 16 }}>
+                <div>{t('error.subscription_unpaid')}</div>
+                <div style={{ marginTop: 6 }}>{t('recovery.activate_subscription')}</div>
+              </div>
+            ) : session.flags.readOnlyReason === 'subscription_expired' ? (
               <div className="note warn" style={{ marginBottom: 16 }}>
                 <div>{t('error.subscription_expired')}</div>
                 <div style={{ marginTop: 6 }}>{t('recovery.renew_subscription')}</div>

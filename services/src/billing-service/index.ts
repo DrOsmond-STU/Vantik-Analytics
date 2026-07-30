@@ -55,6 +55,13 @@ export interface SubscriptionView {
   days_remaining: number;
   /** Benar bila masa berlaku sudah terlampaui — inilah yang memblokir penulisan. */
   expired: boolean;
+  /**
+   * Kapan langganan pertama kali dibayar; NULL bila belum pernah.
+   *
+   * Dipakai UI untuk memilih kata: ruang kerja yang belum pernah aktif perlu "aktifkan",
+   * bukan "perpanjang" — pelanggan baru tidak sedang memperpanjang apa pun.
+   */
+  activated_at: string | null;
   price: number;
   features: Record<string, boolean>;
   quotas: Record<string, number>;
@@ -99,6 +106,7 @@ interface SubscriptionRow {
   auto_renew: number;
   lapsed_at: string | null;
   renewal_reminded_for: string | null;
+  activated_at: string | null;
 }
 
 /**
@@ -142,6 +150,7 @@ export class BillingService {
       expires_at: expiresAt,
       days_remaining: Math.ceil((Date.parse(expiresAt) - Date.now()) / 86_400_000),
       expired: subscriptionLapsed(sub),
+      activated_at: sub.activated_at,
       price: planPrice(plan, sub.billing_cycle),
       features: plan.features,
       quotas: plan.quotas,
@@ -485,6 +494,11 @@ export class BillingService {
   private applyPaidInvoice(invoice: { kind: string; period_start: string; period_end: string }): void {
     const sub = this.currentSubscription();
     const updates: Record<string, string | number | null> = { status: 'active' };
+
+    // Pembayaran pertama yang tercatat menandai ruang kerja pernah aktif. Ditulis hanya
+    // sekali: sesudah ini, blokir masa berlaku berbunyi "kedaluwarsa" — yang benar — alih
+    // alih "belum aktif".
+    if ((sub.activated_at ?? null) === null) updates.activated_at = nowIso();
 
     if (invoice.kind === 'renewal') {
       // Periode hasil perpanjangan TIDAK BOLEH berakhir di masa lalu.

@@ -287,10 +287,11 @@ Yang perlu diketahui operator:
 
 ### 8.1c Pendaftaran mandiri: buka atau tutup
 
-Halaman depan menawarkan paket berlangganan, dan pengunjung dapat membuat ruang kerja
-sendiri berstatus uji coba. Setiap pendaftaran yang berhasil **membuat tenant**, jadi
-jalurnya dibatasi 3 per jam per alamat IP — di shared hosting dengan satu berkas SQLite
-dan kuota disk, batas itu bukan formalitas.
+Halaman depan menawarkan paket berlangganan, dan pengunjung dapat mendaftar sendiri.
+Pendaftarannya menunggu persetujuan admin, dan ruang kerjanya belum dapat menulis sampai
+pembayaran pertama tercatat — tidak ada masa pakai gratis (lihat 8.1e). Setiap pendaftaran
+yang berhasil tetap **membuat tenant**, jadi jalurnya dibatasi 3 per jam per alamat IP — di
+shared hosting dengan satu berkas SQLite dan kuota disk, batas itu bukan formalitas.
 
 Untuk pemasangan internal yang penggunanya dibuat administrator, matikan:
 
@@ -352,6 +353,44 @@ Dua hal yang perlu Anda ketahui sebagai operator:
 Pengingat perpanjangan dikirim 7 hari sebelum berakhir, ke pemegang peran Super Admin
 saja. Pengiriman itu **melewati antrean notifikasi** — baca 8.3: selama kanal email belum
 diisi, pesannya menunggu di antrean dan tidak sampai ke email siapa pun.
+
+#### 8.1e Uji coba gratis: MATI secara bawaan
+
+Ruang kerja baru **tidak** mendapat masa pakai gratis. Alasannya komersial: pendaftaran
+mandiri yang menghadiahkan masa pakai penuh dapat diulang dengan alamat email baru, sehingga
+satu orang memakai platform tanpa pernah membayar — dan persetujuan admin hanya memindahkan
+beban itu ke manusia yang harus menebak mana pendaftar sungguhan, setiap hari.
+
+Yang terjadi pada ruang kerja yang baru dibuat:
+
+| Keadaan | Yang bisa dilakukan |
+|---|---|
+| Menunggu persetujuan admin | Belum dapat dimasuki sama sekali (lihat 8.1c) |
+| Sudah disetujui, belum dibayar | **Dapat dimasuki dan dibaca**, tetapi penulisan dihentikan |
+| Pembayaran pertama tercatat | Terbuka penuh, masa berlaku mulai berjalan |
+
+Dua gerbang itu berdiri sendiri — disetujui bukan berarti aktif.
+
+Pesannya **dibedakan** dari kedaluwarsa: ruang kerja yang belum pernah dibayar berbunyi
+"belum aktif — pembayaran pertama belum tercatat" dan mengarahkan ke **aktivasi**, bukan ke
+perpanjangan sesuatu yang belum pernah berjalan. Tombolnya pun berbunyi *Aktifkan*, bukan
+*Perpanjang*. Perbedaan itu disimpan di kolom `subscriptions.activated_at`.
+
+Bila Anda **memang** ingin menawarkan uji coba, isi jumlah harinya:
+
+```
+VANTIK_TRIAL_DAYS=14
+```
+
+Kosong atau `0` berarti tidak ada uji coba. Nilai yang tidak dapat dibaca sebagai angka
+diabaikan — salah ketik di `.env` tidak akan berarti "uji coba selama NaN hari".
+
+Dua catatan:
+
+- **Pelanggan yang sudah berjalan tidak terpengaruh.** Perubahan ini hanya berlaku untuk
+  tenant yang dibuat sesudahnya; langganan yang sudah aktif tetap aktif.
+- **Data contoh tetap punya uji coba**, karena memang menyebut jumlah harinya sendiri —
+  akun `ujicoba` di 8.1 masih memperagakan peringatan masa berlaku sebagaimana mestinya.
 
 ### 8.2 Penjadwal: pasang cron bila hosting mendukungnya
 

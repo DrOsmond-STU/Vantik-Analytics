@@ -10,7 +10,13 @@ import type { AuditService } from '../audit-service/index.ts';
 import { newId, nowIso, type Db } from '../platform/db.ts';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../platform/errors.ts';
 import { hashPassword, validatePasswordPolicy } from '../platform/crypto.ts';
-import { PLAN_BY_CODE, PLAN_CATALOG, isBillingCycle, type BillingCycle } from '../platform/featureFlags.ts';
+import {
+  PLAN_BY_CODE,
+  PLAN_CATALOG,
+  isBillingCycle,
+  resolveTrialDays,
+  type BillingCycle,
+} from '../platform/featureFlags.ts';
 import type { RequestContext } from '../platform/context.ts';
 import { PlatformOperatorDb } from '../platform/tenancy.ts';
 import { seedStandardRoles } from '../identity-service/index.ts';
@@ -107,8 +113,17 @@ export class TenantService {
     const tenantId = newId('ten');
     const employeeId = newId('emp');
     const adminUserId = newId('usr');
-    const trialDays = input.trialDays ?? 14;
-    const trialEnds = new Date(Date.now() + trialDays * 86_400_000).toISOString();
+    /**
+     * Uji coba gratis: MATI secara bawaan (`VANTIK_TRIAL_DAYS`).
+     *
+     * Tanpa uji coba, langganan lahir dalam keadaan belum dibayar — masa berlakunya
+     * berakhir pada detik yang sama ia dibuat, sehingga ruang kerjanya dapat DIBACA tetapi
+     * tidak dapat menulis sampai pembayaran pertama tercatat. Sengaja bukan "tenant
+     * disuspensi": pelanggan yang sudah membayar lewat transfer perlu dapat masuk, melihat
+     * halaman Langganan, dan menyelesaikannya sendiri.
+     */
+    const trialDays = input.trialDays ?? resolveTrialDays();
+    const trialEnds = trialDays > 0 ? new Date(Date.now() + trialDays * 86_400_000).toISOString() : null;
 
     this.db.transaction(() => {
       this.db
@@ -134,17 +149,22 @@ export class TenantService {
         .prepare(
           `INSERT INTO subscriptions (id, tenant_id, plan_code, billing_cycle, status, trial_ends_at,
                                       current_period_start, current_period_end, cancel_at_period_end,
-                                      pending_plan_code, created_at)
-           VALUES (?,?,?,?,'trialing',?,?,?,0,NULL,?)`,
+                                      pending_plan_code, created_at, activated_at)
+           VALUES (?,?,?,?,?,?,?,?,0,NULL,?,NULL)`,
         )
         .run(
           newId('sub'),
           tenantId,
           input.planCode,
           input.billingCycle,
+          trialEnds ? 'trialing' : 'past_due',
           trialEnds,
           at,
-          trialEnds,
+          // Tanpa uji coba, masa berlaku berakhir pada saat pembuatan: `subscriptionLapsed`
+          // langsung benar, dan blokirnya berlaku sejak permintaan pertama tanpa menunggu
+          // penjadwal. `activated_at` NULL menandai belum pernah dibayar, supaya pesannya
+          // berbunyi "belum aktif" alih-alih "masa berlaku habis".
+          trialEnds ?? at,
           at,
         );
 
