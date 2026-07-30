@@ -24,6 +24,12 @@ import type { AuditService } from '../audit-service/index.ts';
 import type { RequestContext } from '../platform/context.ts';
 import { PLAN_BY_CODE } from '../platform/featureFlags.ts';
 import { periodAfterPayment } from './index.ts';
+import {
+  verifyCallback,
+  verifyGenericHmac,
+  type CallbackEvent,
+  type GatewayConfig,
+} from './gateway.ts';
 
 /** Faktur yang menunggu pembayaran, dilihat dari sisi platform (lintas tenant). */
 export interface UnpaidInvoiceRow {
@@ -214,6 +220,138 @@ export class PlatformBillingService {
     });
 
     return this.listUnpaidFor(invoiceId);
+  }
+
+  /**
+   * Kabar pembayaran dari penyedia, TANPA sesi.
+   *
+   * Ada di sisi platform karena payment gateway tidak punya — dan tidak boleh punya — sesi
+   * pengguna. Sebelumnya endpoint webhook berada di balik `authenticate`, sehingga setiap
+   * kabar dijawab 401: jalurnya terbaca benar di kode tetapi tidak pernah dapat dipanggil
+   * penyedia mana pun. Otentikasinya adalah TANDA TANGAN pesan, bukan sesi.
+   *
+   * Lintas tenant, karena kabar datang untuk faktur mana pun. Faktur dicari lewat id yang
+   * kita sendiri kirim sebagai `external_id`/`order_id`, jadi tidak ada penebakan tenant.
+   */
+  applyProviderCallback(
+    rawBody: string,
+    headers: Record<string, string | undefined>,
+    options: { gateway: GatewayConfig | null; hmacSecret: string; ip: string | null },
+  ): { accepted: boolean; reasonKey?: string } {
+    let event: CallbackEvent;
+    let invoiceId: string;
+    let reference: string | null = null;
+    let methodLabel: string | null = null;
+
+    if (options.gateway) {
+      const verdict = verifyCallback(options.gateway, rawBody, headers);
+      if (!verdict.ok) return { accepted: false, reasonKey: verdict.reasonKey };
+      ({ event, invoiceId, reference, methodLabel } = verdict);
+    } else {
+      // Jalur generik: HMAC-SHA256 di header `x-signature`. Rahasia kosong = penolakan.
+      const check = verifyGenericHmac(options.hmacSecret, rawBody, String(headers['x-signature'] ?? ''));
+      if (!check.ok) return { accepted: false, reasonKey: check.reasonKey };
+      let payload: { event?: string; invoiceId?: string; gatewayRef?: string };
+      try {
+        payload = JSON.parse(rawBody) as typeof payload;
+      } catch {
+        return { accepted: false, reasonKey: 'error.webhook_payload_invalid' };
+      }
+      event =
+        payload.event === 'payment.succeeded' ? 'paid' : payload.event === 'payment.failed' ? 'failed' : 'ignored';
+      invoiceId = String(payload.invoiceId ?? '');
+      reference = payload.gatewayRef ?? null;
+    }
+
+    const invoice = this.db
+      .prepare(
+        `SELECT i.id, i.tenant_id, i.number, i.kind, i.period_start, i.period_end, i.status
+           FROM invoices i JOIN tenants t ON t.id = i.tenant_id
+          WHERE i.id = ? AND t.deleted_at IS NULL`,
+      )
+      .get(invoiceId) as
+      | {
+          id: string;
+          tenant_id: string;
+          number: string;
+          kind: string;
+          period_start: string;
+          period_end: string;
+          status: string;
+        }
+      | undefined;
+    if (!invoice) return { accepted: false, reasonKey: 'error.not_found' };
+
+    // Idempoten. Penyedia MENGIRIM ULANG kabar yang tidak dijawab 2xx, dan tanpa penjagaan
+    // ini pengiriman ulang memajukan masa berlaku satu siklus lagi untuk satu pembayaran.
+    // Jawabannya tetap "diterima" supaya penyedia berhenti mencoba.
+    if (event === 'paid' && invoice.status === 'paid') return { accepted: true };
+
+    const sub = this.db
+      .prepare(
+        `SELECT id, billing_cycle, plan_code, activated_at, pending_plan_code
+           FROM subscriptions WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(invoice.tenant_id) as
+      | {
+          id: string;
+          billing_cycle: string;
+          plan_code: string;
+          activated_at: string | null;
+          pending_plan_code: string | null;
+        }
+      | undefined;
+    if (!sub) return { accepted: false, reasonKey: 'error.no_subscription' };
+
+    const at = nowIso();
+    if (event === 'paid') {
+      this.db.transaction(() => {
+        this.db
+          .prepare(
+            `UPDATE invoices SET status = 'paid', paid_at = ?, gateway_ref = COALESCE(?, gateway_ref),
+                                 payment_method_label = COALESCE(?, payment_method_label)
+              WHERE id = ?`,
+          )
+          .run(at, reference, methodLabel, invoice.id);
+
+        if (invoice.kind === 'renewal' || sub.activated_at === null) {
+          const period = periodAfterPayment(invoice, sub.billing_cycle, at);
+          this.db
+            .prepare(
+              `UPDATE subscriptions
+                  SET status = 'active', current_period_start = ?, current_period_end = ?,
+                      lapsed_at = NULL, renewal_reminded_for = NULL,
+                      plan_code = ?, pending_plan_code = NULL,
+                      activated_at = COALESCE(activated_at, ?)
+                WHERE id = ?`,
+            )
+            .run(period.start, period.end, sub.pending_plan_code ?? sub.plan_code, at, sub.id);
+          this.db
+            .prepare("UPDATE tenants SET status = 'active', suspended_at = NULL WHERE id = ?")
+            .run(invoice.tenant_id);
+        }
+      })();
+    } else if (event === 'failed') {
+      this.db.prepare("UPDATE invoices SET status = 'failed' WHERE id = ?").run(invoice.id);
+    }
+
+    // Aktornya BUKAN manusia. Dicatat apa adanya, terhadap tenant yang dibayar, supaya
+    // riwayat pembayaran dapat dibedakan dari pencatatan manual oleh operator.
+    this.audit.record({
+      tenantId: invoice.tenant_id,
+      actorUserId: 'payment_gateway',
+      actorLabel: options.gateway ? `gateway:${options.gateway.provider}` : 'gateway:generic',
+      actorIp: options.ip,
+      action: event === 'paid' ? 'billing.payment_confirmed' : 'billing.payment_notice',
+      module: 'Billing & Faktur',
+      objectType: 'invoice',
+      objectId: invoice.id,
+      objectLabel: invoice.number,
+      severity: event === 'paid' ? 'notice' : 'info',
+      detail: { event, reference, methodLabel },
+    });
+
+    return { accepted: true };
   }
 
   /** Baris faktur setelah dicatat — dipakai pemanggil untuk menampilkan hasilnya. */

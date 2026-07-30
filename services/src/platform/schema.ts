@@ -1177,6 +1177,25 @@ const REMAINING_MAIN_MIGRATIONS: readonly Migration[] = [
       UPDATE subscriptions SET activated_at = created_at WHERE status = 'active';
     `,
   },
+  {
+    id: '0016_payment_link',
+    sql: `
+      -- Tautan pembayaran dari payment gateway.
+      --
+      -- Disimpan di faktur, bukan dibuat ulang setiap kali layar dibuka: memanggil gateway
+      -- pada setiap pembacaan berarti satu tagihan menghasilkan banyak tagihan di sisi
+      -- penyedia, dan pelanggan melihat nomor pembayaran yang berubah-ubah.
+      --
+      -- Kolom pay_url BUKAN rahasia — ia memang untuk dibuka pelanggan. Yang penting ia
+      -- tidak dapat diterka, karena siapa pun yang memilikinya dapat membayar tagihan itu;
+      -- dibayari orang lain bukan kerugian bagi siapa pun.
+      ALTER TABLE invoices ADD COLUMN pay_url TEXT;
+      ALTER TABLE invoices ADD COLUMN pay_expires_at TEXT;
+      -- Alasan gateway gagal membuat tagihan, bila gagal. Diisi supaya operator tahu
+      -- mengapa sebuah faktur tidak punya tautan bayar, alih-alih menebak.
+      ALTER TABLE invoices ADD COLUMN charge_error TEXT;
+    `,
+  },
 ];
 
 /**

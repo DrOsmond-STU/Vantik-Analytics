@@ -13,6 +13,7 @@ import cookieParser from 'cookie-parser';
 import { AuditService } from './audit-service/index.ts';
 import { openDatabase, type Db, type DbPaths } from './platform/db.ts';
 import { PlatformBillingService } from './billing-service/settlement.ts';
+import { resolveGatewayFromEnv } from './billing-service/gateway.ts';
 import { NotificationOutbox } from './platform/outbox.ts';
 import { OutboxDispatcher } from './platform/outboxDispatcher.ts';
 import { Scheduler, SCHEDULER_INTERVAL_MS, type JobRunner } from './platform/scheduler.ts';
@@ -203,6 +204,11 @@ export function createApp(options: AppOptions = {}): VantikApp {
     (process.env.VANTIK_SELF_SIGNUP ?? 'on').toLowerCase() !== 'off';
   const apiLimiter = new RateLimiter(600, 60_000, db);
   const embedLimiter = new RateLimiter(120, 60_000, db);
+  /**
+   * Kabar pembayaran: publik, jadi dibatasi laju. Longgar karena penyedia mengirim ulang
+   * kabar yang belum dijawab, dan membatasi terlalu ketat berarti pembayaran sah tertahan.
+   */
+  const webhookLimiter = new RateLimiter(120, 60_000, db);
   const idempotency = new IdempotencyStore(db);
 
   /* ================= Publik: kesehatan & autentikasi ================= */
@@ -1204,9 +1210,12 @@ export function createApp(options: AppOptions = {}): VantikApp {
    * tidak dapat menyatakan pembayarannya sendiri. Masa berlaku maju hanya setelah webhook
    * gateway bertanda tangan atau operator platform mencatat pembayarannya.
    */
-  api.post('/subscription/renew', (req, res) => {
-    res.json({ invoice: billingOf(req).requestRenewal() });
-  });
+  api.post(
+    '/subscription/renew',
+    asyncRoute(async (req, res) => {
+      res.json({ invoice: await billingOf(req).requestRenewal() });
+    }),
+  );
   api.get('/invoices', (req, res) => {
     res.json({ invoices: billingOf(req).listInvoices() });
   });
@@ -1540,17 +1549,30 @@ export function createApp(options: AppOptions = {}): VantikApp {
   app.use('/api/v1', api);
 
   /* --- Webhook payment gateway (tanda tangan diverifikasi) --- */
+  /**
+   * Kabar pembayaran dari payment gateway. TANPA sesi — dan itu bukan kelalaian.
+   *
+   * Sebelumnya rute ini berada di balik `authenticate`, sehingga setiap kabar dijawab 401:
+   * jalurnya terbaca benar di kode tetapi tidak pernah dapat dipanggil penyedia mana pun,
+   * karena payment gateway tidak punya sesi pengguna. Yang membuktikan keaslian pesan adalah
+   * TANDA TANGANNYA — token callback Xendit, hash Midtrans, atau HMAC generik — dan
+   * verifikasi itulah otentikasinya.
+   *
+   * Dibatasi laju per alamat IP: rute ini publik, dan tanpa batas ia menjadi cara murah
+   * memaksa server menghitung tanda tangan berulang kali.
+   */
   app.post(
     '/webhooks/payment',
-    authenticate(deps),
+    webhookLimiter.middleware((req) => `payment-webhook:${clientIp(req) ?? 'unknown'}`),
     asyncRoute((req, res) => {
-      const ctx = requireContext(req);
-      const billing = new BillingService(ctx, new MeteringService(ctx));
-      const secret = process.env.VANTIK_PAYMENT_WEBHOOK_SECRET ?? '';
-      const result = billing.handleGatewayWebhook(
+      const result = platformBilling.applyProviderCallback(
         req.rawBodyText ?? '',
-        String(req.headers['x-signature'] ?? ''),
-        secret,
+        req.headers as Record<string, string | undefined>,
+        {
+          gateway: resolveGatewayFromEnv(),
+          hmacSecret: process.env.VANTIK_PAYMENT_WEBHOOK_SECRET ?? '',
+          ip: clientIp(req),
+        },
       );
       res.status(result.accepted ? 200 : 400).json(result);
     }),

@@ -1636,7 +1636,13 @@ export function SubscriptionView(): JSX.Element {
   const [noticeKey, setNoticeKey] = useState<string | null>(null);
   const state = useAsync(() => api.get<SubscriptionPayload>('/subscription'), [nonce]);
 
-  const [invoice, setInvoice] = useState<{ number: string; total: number; period_end: string } | null>(null);
+  const [invoice, setInvoice] = useState<{
+    number: string;
+    total: number;
+    period_end: string;
+    pay_url: string | null;
+    charge_error: string | null;
+  } | null>(null);
 
   /**
    * Meminta faktur perpanjangan.
@@ -1651,10 +1657,15 @@ export function SubscriptionView(): JSX.Element {
     setBusy(true);
     setNoticeKey(null);
     try {
-      const hasil = await api.post<{ invoice: { number: string; total: number; period_end: string } }>(
-        '/subscription/renew',
-        {},
-      );
+      const hasil = await api.post<{
+        invoice: {
+          number: string;
+          total: number;
+          period_end: string;
+          pay_url: string | null;
+          charge_error: string | null;
+        };
+      }>('/subscription/renew', {});
       setInvoice(hasil.invoice);
       setNonce((n) => n + 1);
       // Sesi memuat `flags.readOnly`. Ruang kerja BELUM terbuka di sini — memuat ulang
@@ -1726,7 +1737,30 @@ export function SubscriptionView(): JSX.Element {
                       total: formatCurrency(invoice.total, locale),
                     })}
                   </div>
-                  <div style={{ marginTop: 6 }}>{t('ui.invoice_awaiting_payment')}</div>
+
+                  {/* Tautan bayar bila payment gateway dikonfigurasi. Halaman penyedia-lah
+                      yang menampilkan QRIS, virtual account, dan e-wallet — sistem ini tidak
+                      menggambar kode QR sendiri, dan tidak pernah menyentuh data kartu. */}
+                  {invoice.pay_url ? (
+                    <div style={{ marginTop: 10 }}>
+                      <a
+                        className="btn primary"
+                        href={invoice.pay_url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        data-testid="pay-now"
+                      >
+                        {t('action.pay_now')}
+                      </a>
+                      <div style={{ marginTop: 6 }}>{t('ui.pay_now_hint')}</div>
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 6 }}>
+                      {/* Dibedakan: belum dikonfigurasi bukan hal yang sama dengan gagal
+                          dihubungi, dan pelanggan berhak tahu yang mana. */}
+                      {t(invoice.charge_error ? 'ui.pay_link_failed' : 'ui.invoice_awaiting_payment')}
+                    </div>
+                  )}
                 </div>
               )}
 

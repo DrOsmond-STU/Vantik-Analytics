@@ -915,6 +915,27 @@ export const dictionary = {
     'Issue activation invoice {cycle} — {price}',
   ],
   'action.record_payment': ['Catat pembayaran', 'Record payment'],
+  'action.pay_now': ['Bayar sekarang', 'Pay now'],
+  'ui.pay_now_hint': [
+    'Halaman pembayaran akan terbuka di tab baru — pilih QRIS, virtual account, atau e-wallet di sana. Ruang kerja terbuka otomatis begitu pembayarannya dikonfirmasi.',
+    'The payment page opens in a new tab — choose QRIS, virtual account, or e-wallet there. The workspace opens automatically once payment is confirmed.',
+  ],
+  'ui.pay_link_failed': [
+    'Tautan pembayaran belum dapat dibuat. Fakturnya tetap sah — hubungi admin untuk menyelesaikan pembayaran, atau coba lagi sebentar lagi.',
+    'The payment link could not be created. The invoice is still valid — contact the admin to complete payment, or try again shortly.',
+  ],
+  'error.payment_gateway_not_configured': [
+    'Payment gateway belum dikonfigurasi, jadi kabar pembayaran ditolak.',
+    'The payment gateway is not configured, so payment notifications are refused.',
+  ],
+  'error.payment_callback_token_missing': [
+    'Token verifikasi payment gateway belum diisi, jadi kabar pembayaran tidak dapat dipercaya.',
+    'The payment gateway verification token is not set, so payment notifications cannot be trusted.',
+  ],
+  'error.webhook_payload_invalid': [
+    'Badan kabar pembayaran tidak dapat dibaca.',
+    'The payment notification body could not be read.',
+  ],
   'ui.invoice_issued': [
     'Faktur {number} sudah diterbitkan sebesar {total}.',
     'Invoice {number} has been issued for {total}.',

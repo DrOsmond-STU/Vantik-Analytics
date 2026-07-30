@@ -222,6 +222,9 @@ Mengikuti DEPLOYMENT.md Bagian 10 (checklist pra-peluncuran R1) dan SECURITY.md:
       tetap terkunci
 - [ ] `VANTIK_PAYMENT_WEBHOOK_SECRET` diisi bila memakai payment gateway; dibiarkan kosong
       berarti webhook-nya MENOLAK semua pemberitahuan (fail secure)
+- [ ] Bila memakai Xendit/Midtrans (lihat 8.1g): kredensial diisi, **URL kabar pembayaran
+      terdaftar di dasbor penyedia**, dan satu pembayaran uji sudah membuka ruang kerja
+      secara otomatis
 - [ ] Jendela pemangkasan tabel ditinjau bila pemakaian berat (lihat 8.4); pertumbuhan
       berkas audit dipahami tidak dapat dipangkas (lihat 9b)
 - [ ] Kredensial notifikasi diisi (lihat 8.3) — SMTP minimal, karena tanpanya OTP pemindahan
@@ -401,6 +404,68 @@ Dua hal yang perlu diketahui:
 Setiap pencatatan tercatat di **Log Aktivitas tenant yang dibayar** — bukan tenant
 operatornya — ditandai sebagai akses operator, lengkap dengan nomor referensinya. Jadi
 pelanggan dapat memeriksa sendiri riwayat pembayarannya.
+
+#### 8.1g Payment gateway: Xendit atau Midtrans (QRIS, VA, e-wallet)
+
+Bila diisi, tombol di halaman *Langganan & Paket* menghasilkan **tautan pembayaran** —
+halaman milik penyedia yang menampilkan **QRIS**, virtual account, dan e-wallet. Pelanggan
+membayar di sana, penyedia mengabari sistem, dan ruang kerja terbuka **otomatis** tanpa
+operator menyentuh apa pun.
+
+Kosong secara bawaan. Selama kosong, jalur manual di 8.1f tetap berjalan apa adanya.
+
+| Variabel | Wajib | Keterangan |
+|---|---|---|
+| `VANTIK_PAYMENT_PROVIDER` | ya | `xendit` atau `midtrans`. Kosong = pembayaran manual |
+| `VANTIK_PAYMENT_SECRET_KEY` | ya | Xendit: *Secret API Key*. Midtrans: *Server Key* |
+| `VANTIK_PAYMENT_CALLBACK_TOKEN` | Xendit | *Callback Verification Token* dari dasbor Xendit |
+| `VANTIK_PAYMENT_API_BASE` | tidak | Isi untuk memakai lingkungan sandbox penyedia |
+| `VANTIK_PAYMENT_SUCCESS_URL` | tidak | Tujuan setelah pembayaran selesai |
+| `VANTIK_PAYMENT_FAILURE_URL` | tidak | Tujuan bila pembayaran dibatalkan |
+
+Kanal aktif hanya bila **penyedia dan kunci rahasia** terisi. Setengah terkonfigurasi tidak
+diaktifkan: tautan bayar yang pasti gagal dibuat hanya menghasilkan pesan kesalahan di layar
+pelanggan, sementara "belum dikonfigurasi" menyatakan keadaan yang sebenarnya.
+
+**Daftarkan URL kabar pembayaran di dasbor penyedia:**
+
+```
+https://analitik.contoh.id/webhooks/payment
+```
+
+- **Xendit** → *Settings → Webhooks*, isi *Invoices paid* dengan URL di atas. Salin
+  *Callback Verification Token*-nya ke `VANTIK_PAYMENT_CALLBACK_TOKEN`. Xendit membuktikan
+  keaslian pesan lewat token itu; **selama token kosong, seluruh kabar DITOLAK.**
+- **Midtrans** → *Settings → Configuration → Payment Notification URL*. Midtrans tidak
+  memakai token: ia men-hash badan pesan bersama Server Key, jadi `CALLBACK_TOKEN` boleh
+  dibiarkan kosong.
+
+Empat hal yang perlu diketahui:
+
+1. **Satu faktur, satu tagihan.** Menekan tombol dua kali mengembalikan tautan yang sama —
+   nomor pembayaran tidak berubah-ubah, dan tidak ada tagihan menumpuk di sisi penyedia.
+2. **Kabar yang dikirim ulang tidak menambah masa berlaku.** Penyedia memang mengirim ulang
+   kabar yang tidak dijawab `200`; pengiriman kedua dijawab "diterima" tanpa memajukan
+   periode lagi.
+3. **Pembayaran yang masih ditinjau tidak membuka ruang kerja.** Pada Midtrans, `capture`
+   dengan `fraud_status: challenge` menunggu keputusan manual — memperlakukannya sebagai
+   lunas berarti membuka ruang kerja atas pembayaran yang masih dapat dibatalkan.
+4. **Gateway yang gagal tidak menggagalkan faktur.** Bila penyedia tidak dapat dihubungi,
+   fakturnya tetap sah, layar pelanggan mengatakan tautannya belum dapat dibuat, dan
+   pembayaran manual tetap dapat dicatat operator.
+
+Data kartu **tidak pernah** melewati sistem ini (SECURITY.md 16.3): yang disimpan hanya
+tautan pembayaran, rujukan transaksi, dan nama cara bayarnya.
+
+Endpoint `/webhooks/payment` **tidak memerlukan sesi** — payment gateway tidak punya, dan
+tidak boleh punya. Yang membuktikan keaslian pesan adalah tanda tangannya, dan verifikasi
+itulah otentikasinya. Endpoint ini dibatasi 120 permintaan per menit per alamat IP, cukup
+longgar karena penyedia mengirim ulang kabar yang belum dijawab `200`.
+
+Setiap pembayaran yang dikonfirmasi gateway tercatat di **Log Aktivitas tenant** dengan
+aktor `gateway:xendit` / `gateway:midtrans` — dibedakan dari `billing.payment_recorded` yang
+dicatat operator manusia, sehingga riwayatnya dapat dibaca: mana yang otomatis, mana yang
+dicocokkan manusia.
 
 > **Bila Anda memperbarui dari versi sebelumnya:** izin peran standar disegarkan dari kode
 > setiap kali aplikasi menyala, jadi pengetatan ini berlaku **setelah restart** — termasuk

@@ -83,8 +83,8 @@ function setPeriod(fixture: TenantFixture, changes: Record<string, string | numb
  * ditutup: `billing:settle` ditolak untuk Super Admin tenant, jadi uji ini pun tidak dapat
  * memakai jalan pintas yang sudah tidak ada.
  */
-function perpanjang(fixture: TenantFixture = tenant, reference = 'REF-UJI-0001'): void {
-  const invoice = billing(fixture).requestRenewal();
+async function perpanjang(fixture: TenantFixture = tenant, reference = 'REF-UJI-0001'): Promise<void> {
+  const invoice = await billing(fixture).requestRenewal();
   const operator = contextFor(harness, fixture.tenantId, ['platform_operator'], { mfaEnrolled: true });
   new PlatformBillingService(harness.db, harness.audit).recordPayment(operator, invoice.id, {
     reference,
@@ -441,14 +441,14 @@ describe('Faktur perpanjangan dan pemberitahuan', () => {
 /* ================= Perpanjangan: jalan keluar dari blokir ================= */
 
 describe('Perpanjangan', () => {
-  it('TC-SUB-26 — perpanjangan memajukan masa berlaku sepanjang siklus dan membuka blokir', () => {
+  it('TC-SUB-26 — perpanjangan memajukan masa berlaku sepanjang siklus dan membuka blokir', async () => {
     const tiga = provisionTenant(harness, { slug: 'tigabulanx', planCode: 'professional', billingCycle: 'quarterly' });
     const habis = daysFromNow(-1);
     setPeriod(tiga, { status: 'active', trial_ends_at: null, current_period_end: habis });
     expect(cobaMenulis(tiga)?.messageKey).toBe('error.subscription_expired');
 
     billing(tiga).enforceLifecycle(); // menerbitkan faktur perpanjangan
-    perpanjang(tiga);
+    await perpanjang(tiga);
 
     const sub = subscriptionRow(tiga);
     expect(sub.status).toBe('active');
@@ -458,7 +458,7 @@ describe('Perpanjangan', () => {
     expect(cobaMenulis(tiga)).toBeNull();
   });
 
-  it('TC-SUB-27 — perpanjangan tetap dapat dilakukan SAAT ruang kerja sedang terkunci', () => {
+  it('TC-SUB-27 — perpanjangan tetap dapat dilakukan SAAT ruang kerja sedang terkunci', async () => {
     // Kalau `renew()` ikut tunduk pada `requireWritable()`, blokirnya mengunci pintu
     // keluarnya sendiri dan pelanggan tidak akan pernah bisa memulihkan diri.
     setPeriod(tenant, {
@@ -469,16 +469,16 @@ describe('Perpanjangan', () => {
     billing().enforceLifecycle();
     expect(tenantStatus()).toBe('suspended');
 
-    perpanjang();
+    await perpanjang();
     expect(tenantStatus()).toBe('active');
     expect(cobaMenulis()).toBeNull();
   });
 
-  it('TC-SUB-28 — perpanjangan lebih awal menyambung dari akhir periode berjalan', () => {
+  it('TC-SUB-28 — perpanjangan lebih awal menyambung dari akhir periode berjalan', async () => {
     const akhir = daysFromNow(10);
     setPeriod(tenant, { status: 'active', trial_ends_at: null, current_period_end: akhir });
 
-    perpanjang();
+    await perpanjang();
 
     const sub = subscriptionRow(tenant);
     // Tidak ada hari yang hangus: periode baru mulai persis di akhir periode lama.
@@ -528,21 +528,21 @@ describe('Perpanjangan', () => {
     expect(subscriptionRow(tenant).current_period_end).toBe(akhir);
   });
 
-  it('TC-SUB-31 — downgrade tertunda baru berlaku ketika siklus berikutnya dibayar', () => {
+  it('TC-SUB-31 — downgrade tertunda baru berlaku ketika siklus berikutnya dibayar', async () => {
     billing().changePlan('starter'); // downgrade → tertunda
     expect(subscriptionRow(tenant).pending_plan_code).toBe('starter');
     expect(subscriptionRow(tenant).plan_code).toBe('professional');
 
     setPeriod(tenant, { status: 'active', trial_ends_at: null, current_period_end: daysFromNow(-1) });
     billing().enforceLifecycle();
-    perpanjang();
+    await perpanjang();
 
     const sub = subscriptionRow(tenant);
     expect(sub.plan_code).toBe('starter');
     expect(sub.pending_plan_code).toBeNull();
   });
 
-  it('TC-SUB-33 — perpanjangan yang dibayar sangat terlambat tetap berakhir di masa depan', () => {
+  it('TC-SUB-33 — perpanjangan yang dibayar sangat terlambat tetap berakhir di masa depan', async () => {
     // Faktur diterbitkan untuk periode yang mulai saat masa berlaku habis. Pelanggan
     // yang terlambat lebih lama daripada satu siklus akan membeli periode yang sudah
     // lewat — ia membayar, lalu tetap terkunci. Periodenya dihitung ulang dari saat
@@ -550,7 +550,7 @@ describe('Perpanjangan', () => {
     // baca-saja.
     setPeriod(tenant, { status: 'active', trial_ends_at: null, current_period_end: daysFromNow(-95) });
     billing().enforceLifecycle();
-    perpanjang();
+    await perpanjang();
 
     const sub = subscriptionRow(tenant);
     expect(Date.parse(String(sub.current_period_end))).toBeGreaterThan(Date.now());

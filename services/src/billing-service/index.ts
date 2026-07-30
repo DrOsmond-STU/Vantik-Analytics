@@ -17,6 +17,7 @@ import {
   type QuotaKey,
 } from '../platform/featureFlags.ts';
 import { subscriptionExpiresAt, subscriptionLapsed, type RequestContext } from '../platform/context.ts';
+import { resolveGatewayFromEnv, tryCreateCharge, verifyCallback, type GatewayConfig } from './gateway.ts';
 import type { NotificationOutbox } from '../platform/outbox.ts';
 import type { MeteringService } from '../metering-service/index.ts';
 
@@ -81,6 +82,15 @@ export interface InvoiceView {
   due_at: string;
   paid_at: string | null;
   payment_method_label: string | null;
+  /**
+   * Halaman pembayaran penyedia — di sinilah QRIS, virtual account, dan e-wallet muncul.
+   *
+   * NULL bila payment gateway belum dikonfigurasi, atau bila panggilan ke gateway gagal.
+   * Keduanya dibedakan lewat `charge_error`, supaya operator tidak menebak.
+   */
+  pay_url: string | null;
+  pay_expires_at: string | null;
+  charge_error: string | null;
   lines: Array<{ description: string; amount: number }>;
 }
 
@@ -153,6 +163,12 @@ export class BillingService {
      * sebagai terkirim padahal tidak.
      */
     private readonly outbox?: NotificationOutbox,
+    /**
+     * Konfigurasi payment gateway. Bila tidak diberikan, dibaca dari variabel lingkungan —
+     * jadi pemakaian lama tetap berjalan, dan pengujian dapat menyuntik konfigurasi tanpa
+     * menyentuh `process.env`.
+     */
+    private readonly gateway?: GatewayConfig | null,
   ) {}
 
   private currentSubscription(): SubscriptionRow {
@@ -441,7 +457,8 @@ export class BillingService {
       detail: { total: row.total, status: row.status },
     });
 
-    return { ...row, lines: input.lines } as InvoiceView;
+    // Faktur yang baru diterbitkan belum punya tautan bayar; `ensureCharge()` mengisinya.
+    return { ...row, pay_url: null, pay_expires_at: null, charge_error: null, lines: input.lines } as InvoiceView;
   }
 
   /**
@@ -498,6 +515,10 @@ export class BillingService {
     if (!invoice) return { accepted: false, reasonKey: 'error.not_found' };
 
     if (payload.event === 'payment.succeeded') {
+      // Idempoten. Penyedia pembayaran MENGIRIM ULANG kabar yang tidak dijawab 2xx, dan
+      // tanpa penjagaan ini pengiriman ulang akan memajukan masa berlaku satu siklus lagi
+      // untuk satu pembayaran — kerugian yang tidak terlihat, karena semuanya "berhasil".
+      if (this.invoiceStatus(payload.invoiceId) === 'paid') return { accepted: true };
       this.ctx.db.update(
         'invoices',
         { id: payload.invoiceId },
@@ -577,7 +598,7 @@ export class BillingService {
    * Faktur yang masih terbuka DIKEMBALIKAN apa adanya alih-alih diterbitkan lagi: menekan
    * tombol dua kali tidak boleh menghasilkan dua tagihan untuk periode yang sama.
    */
-  requestRenewal(): InvoiceView {
+  async requestRenewal(): Promise<InvoiceView> {
     this.ctx.require('subscription:write', { module: 'Manajemen Langganan & Paket' });
 
     const sub = this.currentSubscription();
@@ -587,7 +608,12 @@ export class BillingService {
       { orderBy: 'created_at DESC' },
     );
     const unpaid = open.find((i) => i.id && this.invoiceStatus(i.id) !== 'paid');
-    if (unpaid) return this.invoiceById(unpaid.id);
+    if (unpaid) {
+      // Faktur yang masih terbuka dikembalikan apa adanya, termasuk tautan bayarnya. Membuat
+      // tagihan baru di gateway setiap kali tombol ditekan akan menumpuk tagihan untuk satu
+      // periode yang sama, dan pelanggan melihat nomor pembayaran yang berubah-ubah.
+      return await this.ensureCharge(this.invoiceById(unpaid.id));
+    }
 
     const plan = PLAN_BY_CODE.get(sub.plan_code)!;
     const start = subscriptionLapsed(sub) ? subscriptionExpiresAt(sub) : sub.current_period_end;
@@ -613,7 +639,156 @@ export class BillingService {
       detail: { cycle: sub.billing_cycle, periodEnd: invoice.period_end, total: invoice.total },
     });
 
+    return await this.ensureCharge(this.invoiceById(invoice.id));
+  }
+
+  /**
+   * Melengkapi faktur dengan tautan pembayaran, bila payment gateway dikonfigurasi.
+   *
+   * Kegagalan gateway TIDAK menggagalkan penerbitan faktur: fakturnya sah dan jalur
+   * pembayaran manual tetap ada. Alasannya dicatat di `charge_error` supaya layar pelanggan
+   * dapat mengatakan apa yang terjadi, dan operator tahu mengapa sebuah faktur tidak punya
+   * tautan — alih-alih menyimpulkan gateway-nya belum diisi.
+   */
+  private async ensureCharge(invoice: InvoiceView): Promise<InvoiceView> {
+    if (invoice.pay_url) return invoice;
+    const config = this.gateway ?? resolveGatewayFromEnv();
+    if (!config) return invoice;
+
+    // Alamat administrator pertama, untuk dicantumkan di halaman pembayaran penyedia.
+    const payer = this.ctx.db.all<{ email: string }>('system_user', undefined, {
+      orderBy: 'created_at ASC',
+      limit: 1,
+    })[0];
+    const outcome = await tryCreateCharge(config, {
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.number,
+      amount: invoice.total,
+      currency: invoice.currency,
+      description: invoice.lines.map((l) => l.description).join(', ') || invoice.number,
+      payerEmail: payer?.email ?? null,
+      payerName: this.ctx.tenant.name,
+    });
+
+    if (!outcome.ok) {
+      this.ctx.db.update('invoices', { id: invoice.id }, { charge_error: outcome.failureReason });
+      this.ctx.log({
+        action: 'billing.charge_failed',
+        module: 'Billing & Faktur',
+        objectType: 'invoice',
+        objectId: invoice.id,
+        objectLabel: invoice.number,
+        outcome: 'failure',
+        severity: 'warning',
+        // Hanya kodenya: pesan kesalahan HTTP dapat memuat URL berikut kunci rahasianya.
+        detail: { reason: outcome.failureReason, provider: config.provider },
+      });
+      return this.invoiceById(invoice.id);
+    }
+
+    this.ctx.db.update(
+      'invoices',
+      { id: invoice.id },
+      {
+        pay_url: outcome.charge.payUrl,
+        pay_expires_at: outcome.charge.expiresAt,
+        gateway_ref: outcome.charge.reference,
+        charge_error: null,
+      },
+    );
+    this.ctx.log({
+      action: 'billing.charge_created',
+      module: 'Billing & Faktur',
+      objectType: 'invoice',
+      objectId: invoice.id,
+      objectLabel: invoice.number,
+      severity: 'notice',
+      detail: { provider: config.provider, reference: outcome.charge.reference },
+    });
     return this.invoiceById(invoice.id);
+  }
+
+  /**
+   * Kabar pembayaran dari payment gateway yang dikonfigurasi (Xendit / Midtrans).
+   *
+   * Terpisah dari `handleGatewayWebhook()` — yang memverifikasi HMAC generik — karena cara
+   * tiap penyedia membuktikan keaslian pesannya berbeda: Xendit memakai token statis di
+   * header, Midtrans men-hash badan pesan bersama Server Key. Menyatukannya berarti satu
+   * cabang harus menebak penyedia dari bentuk payload, dan menebak salah di jalur yang
+   * MENYATAKAN faktur lunas berarti menerima kabar palsu.
+   */
+  handleProviderCallback(
+    rawBody: string,
+    headers: Record<string, string | undefined>,
+  ): { accepted: boolean; reasonKey?: string } {
+    const config = this.gateway ?? resolveGatewayFromEnv();
+    if (!config) {
+      // Belum dikonfigurasi = penolakan. Menerima kabar yang tidak dapat diverifikasi
+      // berarti siapa pun yang mengetahui nomor faktur dapat membuka ruang kerja gratis.
+      this.ctx.log({
+        action: 'billing.webhook_rejected',
+        module: 'Billing & Faktur',
+        objectType: 'webhook',
+        outcome: 'denied',
+        severity: 'critical',
+        detail: { reason: 'gateway_not_configured' },
+      });
+      return { accepted: false, reasonKey: 'error.payment_gateway_not_configured' };
+    }
+
+    const verdict = verifyCallback(config, rawBody, headers);
+    if (!verdict.ok) {
+      this.ctx.log({
+        action: 'billing.webhook_rejected',
+        module: 'Billing & Faktur',
+        objectType: 'webhook',
+        outcome: 'denied',
+        severity: 'critical',
+        detail: { reason: verdict.reasonKey ?? 'invalid', provider: config.provider },
+      });
+      return { accepted: false, reasonKey: verdict.reasonKey ?? 'error.webhook_signature_invalid' };
+    }
+
+    const invoice = this.ctx.db.get<{
+      id: string;
+      number: string;
+      kind: string;
+      period_start: string;
+      period_end: string;
+    }>('invoices', { id: verdict.invoiceId });
+    // Faktur milik tenant lain tidak terlihat dari konteks ini, jadi jawabannya sama dengan
+    // faktur yang tidak ada — kabar pembayaran tidak boleh menjadi cara memetakan tenant.
+    if (!invoice) return { accepted: false, reasonKey: 'error.not_found' };
+
+    if (verdict.event === 'paid') {
+      if (this.invoiceStatus(invoice.id) === 'paid') return { accepted: true };
+      this.ctx.db.update(
+        'invoices',
+        { id: invoice.id },
+        {
+          status: 'paid',
+          paid_at: nowIso(),
+          gateway_ref: verdict.reference,
+          payment_method_label: verdict.methodLabel,
+        },
+      );
+      this.applyPaidInvoice(invoice);
+    } else if (verdict.event === 'failed') {
+      this.ctx.db.update('invoices', { id: invoice.id }, { status: 'failed' });
+      this.applyDunning();
+    }
+
+    this.ctx.log({
+      action: 'billing.webhook_processed',
+      module: 'Billing & Faktur',
+      objectType: 'invoice',
+      objectId: invoice.id,
+      objectLabel: invoice.number,
+      severity: verdict.event === 'paid' ? 'notice' : 'info',
+      detail: { provider: config.provider, event: verdict.event, reference: verdict.reference },
+    });
+
+    return { accepted: true };
   }
 
   private invoiceStatus(invoiceId: string): string {

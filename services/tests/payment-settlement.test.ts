@@ -97,20 +97,20 @@ function kedaluwarsakan(fixture: TenantFixture = tenant, sejakHari = 1): void {
 /* ================= Permintaan perpanjangan ================= */
 
 describe('Permintaan perpanjangan', () => {
-  it('TC-PAY-01 — menghasilkan faktur yang BELUM dibayar', () => {
+  it('TC-PAY-01 — menghasilkan faktur yang BELUM dibayar', async () => {
     kedaluwarsakan();
-    const invoice = pelanggan().requestRenewal();
+    const invoice = await pelanggan().requestRenewal();
 
     expect(invoice.status).not.toBe('paid');
     expect(invoice.paid_at).toBeNull();
     expect(invoice.total).toBeGreaterThan(0);
   });
 
-  it('TC-PAY-02 — TIDAK memajukan masa berlaku, dan ruang kerja tetap terkunci', () => {
+  it('TC-PAY-02 — TIDAK memajukan masa berlaku, dan ruang kerja tetap terkunci', async () => {
     kedaluwarsakan();
     const sebelum = subRow();
 
-    pelanggan().requestRenewal();
+    await pelanggan().requestRenewal();
 
     const sesudah = subRow();
     // Inilah cacat yang ditutup: dahulu panggilan ini sendiri yang memajukan periode.
@@ -119,10 +119,10 @@ describe('Permintaan perpanjangan', () => {
     expect(loadFeatureFlags(harness.db, tenant.tenantId, tenantStatus()).readOnly).toBe(true);
   });
 
-  it('TC-PAY-03 — menekan dua kali tidak menghasilkan dua tagihan', () => {
+  it('TC-PAY-03 — menekan dua kali tidak menghasilkan dua tagihan', async () => {
     kedaluwarsakan();
-    const pertama = pelanggan().requestRenewal();
-    const kedua = pelanggan().requestRenewal();
+    const pertama = await pelanggan().requestRenewal();
+    const kedua = await pelanggan().requestRenewal();
 
     expect(kedua.id).toBe(pertama.id);
     const jumlah = harness.db
@@ -135,9 +135,9 @@ describe('Permintaan perpanjangan', () => {
 /* ================= Pemisahan wewenang ================= */
 
 describe('Wewenang menyatakan lunas', () => {
-  it('TC-PAY-04 — Super Admin tenant TIDAK dapat mencatat pembayarannya sendiri', () => {
+  it('TC-PAY-04 — Super Admin tenant TIDAK dapat mencatat pembayarannya sendiri', async () => {
     kedaluwarsakan();
-    const invoice = pelanggan().requestRenewal();
+    const invoice = await pelanggan().requestRenewal();
     const ctx = contextFor(harness, tenant.tenantId, ['super_admin'], { mfaEnrolled: true });
 
     // Pemilik ruang kerja memegang `*:*`; yang menghentikannya adalah PENOLAKAN eksplisit.
@@ -152,7 +152,7 @@ describe('Wewenang menyatakan lunas', () => {
     expect(loadFeatureFlags(harness.db, tenant.tenantId, tenantStatus()).readOnly).toBe(true);
   });
 
-  it('TC-PAY-04b — pelanggan tidak dapat MEMBACA antrean faktur lintas tenant', () => {
+  it('TC-PAY-04b — pelanggan tidak dapat MEMBACA antrean faktur lintas tenant', async () => {
     provisionTenant(harness, { slug: 'tenantlainx', planCode: 'starter', trialDays: 0 });
     const ctx = contextFor(harness, tenant.tenantId, ['super_admin'], { mfaEnrolled: true });
 
@@ -163,7 +163,7 @@ describe('Wewenang menyatakan lunas', () => {
     expect(() => platform().listUnpaid(ctx)).toThrow(ForbiddenError);
   });
 
-  it('TC-PAY-05 — penolakan itu struktural, bukan kebetulan urutan izin', () => {
+  it('TC-PAY-05 — penolakan itu struktural, bukan kebetulan urutan izin', async () => {
     const superAdmin = STANDARD_ROLE_BY_CODE.get('super_admin')!;
     const operator = STANDARD_ROLE_BY_CODE.get('platform_operator')!;
 
@@ -173,9 +173,9 @@ describe('Wewenang menyatakan lunas', () => {
     expect(operator.permissions).toContain('billing:settle');
   });
 
-  it('TC-PAY-06 — operator platform mencatat pembayaran dan masa berlaku maju', () => {
+  it('TC-PAY-06 — operator platform mencatat pembayaran dan masa berlaku maju', async () => {
     kedaluwarsakan();
-    const invoice = pelanggan().requestRenewal();
+    const invoice = await pelanggan().requestRenewal();
 
     const hasil = platform().recordPayment(operatorCtx(), invoice.id, {
       reference: 'MUT-BCA-99871',
@@ -190,9 +190,9 @@ describe('Wewenang menyatakan lunas', () => {
     expect(loadFeatureFlags(harness.db, tenant.tenantId, tenantStatus()).readOnly).toBe(false);
   });
 
-  it('TC-PAY-07 — pencatatan tanpa nomor referensi ditolak', () => {
+  it('TC-PAY-07 — pencatatan tanpa nomor referensi ditolak', async () => {
     kedaluwarsakan();
-    const invoice = pelanggan().requestRenewal();
+    const invoice = await pelanggan().requestRenewal();
 
     // Tanpa referensi, pencatatan tidak dapat dicocokkan dengan mutasi rekening — jejak
     // audit yang tidak dapat diperiksa hanyalah catatan yang menenangkan.
@@ -202,9 +202,9 @@ describe('Wewenang menyatakan lunas', () => {
     expect(Date.parse(String(subRow().current_period_end))).toBeLessThan(Date.now());
   });
 
-  it('TC-PAY-08 — satu faktur tidak dapat dicatat dua kali', () => {
+  it('TC-PAY-08 — satu faktur tidak dapat dicatat dua kali', async () => {
     kedaluwarsakan();
-    const invoice = pelanggan().requestRenewal();
+    const invoice = await pelanggan().requestRenewal();
     platform().recordPayment(operatorCtx(), invoice.id, { reference: 'MUT-1', methodLabel: 'Transfer' });
     const setelahSekali = subRow().current_period_end;
 
@@ -215,9 +215,9 @@ describe('Wewenang menyatakan lunas', () => {
     expect(subRow().current_period_end).toBe(setelahSekali);
   });
 
-  it('TC-PAY-09 — pencatatan tercatat di Log Aktivitas tenant yang dibayar', () => {
+  it('TC-PAY-09 — pencatatan tercatat di Log Aktivitas tenant yang dibayar', async () => {
     kedaluwarsakan();
-    const invoice = pelanggan().requestRenewal();
+    const invoice = await pelanggan().requestRenewal();
     platform().recordPayment(operatorCtx(), invoice.id, {
       reference: 'MUT-BCA-55512',
       methodLabel: 'Transfer BCA',
@@ -236,13 +236,13 @@ describe('Wewenang menyatakan lunas', () => {
 /* ================= Aktivasi pertama ================= */
 
 describe('Pembayaran pertama', () => {
-  it('TC-PAY-10 — ruang kerja yang belum pernah aktif terbuka setelah dibayar', () => {
+  it('TC-PAY-10 — ruang kerja yang belum pernah aktif terbuka setelah dibayar', async () => {
     const baru = provisionTenant(harness, { slug: 'belumbayarx', planCode: 'starter', trialDays: 0 });
     expect(loadFeatureFlags(harness.db, baru.tenantId, tenantStatus(baru)).readOnlyReason).toBe(
       'subscription_unpaid',
     );
 
-    const invoice = pelanggan(baru).requestRenewal();
+    const invoice = await pelanggan(baru).requestRenewal();
     // Antrean operator menandainya sebagai pembayaran PERTAMA, bukan perpanjangan.
     const antrean = platform().listUnpaid(operatorCtx(baru));
     expect(antrean.find((i) => i.id === invoice.id)?.first_payment).toBe(1);
@@ -259,9 +259,9 @@ describe('Pembayaran pertama', () => {
     expect(flags.readOnlyReason).toBeNull();
   });
 
-  it('TC-PAY-11 — sesudah aktif, blokir berikutnya berbunyi kedaluwarsa', () => {
+  it('TC-PAY-11 — sesudah aktif, blokir berikutnya berbunyi kedaluwarsa', async () => {
     const baru = provisionTenant(harness, { slug: 'sudahbayarx', planCode: 'starter', trialDays: 0 });
-    const invoice = pelanggan(baru).requestRenewal();
+    const invoice = await pelanggan(baru).requestRenewal();
     platform().recordPayment(operatorCtx(baru), invoice.id, { reference: 'MUT-2', methodLabel: 'Transfer' });
 
     setPeriod(baru, { current_period_end: hariLalu(2) });
@@ -277,9 +277,9 @@ describe('Pembayaran pertama', () => {
 /* ================= Webhook gateway ================= */
 
 describe('Webhook payment gateway', () => {
-  it('TC-PAY-12 — webhook DITOLAK bila rahasianya belum dikonfigurasi', () => {
+  it('TC-PAY-12 — webhook DITOLAK bila rahasianya belum dikonfigurasi', async () => {
     kedaluwarsakan();
-    const invoice = pelanggan().requestRenewal();
+    const invoice = await pelanggan().requestRenewal();
     const body = JSON.stringify({ event: 'payment.succeeded', invoiceId: invoice.id });
     // Tanda tangan yang "sah" untuk rahasia kosong dapat dihitung siapa pun yang tahu
     // rahasianya belum diisi — jalur ini menyatakan faktur lunas, jadi harus fail secure.
@@ -292,9 +292,9 @@ describe('Webhook payment gateway', () => {
     expect(Date.parse(String(subRow().current_period_end))).toBeLessThan(Date.now());
   });
 
-  it('TC-PAY-13 — webhook bertanda tangan sah memajukan masa berlaku', () => {
+  it('TC-PAY-13 — webhook bertanda tangan sah memajukan masa berlaku', async () => {
     kedaluwarsakan();
-    const invoice = pelanggan().requestRenewal();
+    const invoice = await pelanggan().requestRenewal();
     const secret = 'rahasia-webhook-uji';
     const body = JSON.stringify({ event: 'payment.succeeded', invoiceId: invoice.id, gatewayRef: 'GW-1' });
 
@@ -309,9 +309,9 @@ describe('Webhook payment gateway', () => {
     expect(Date.parse(String(subRow().current_period_end))).toBeGreaterThan(Date.now());
   });
 
-  it('TC-PAY-14 — tanda tangan salah tetap ditolak', () => {
+  it('TC-PAY-14 — tanda tangan salah tetap ditolak', async () => {
     kedaluwarsakan();
-    const invoice = pelanggan().requestRenewal();
+    const invoice = await pelanggan().requestRenewal();
     const body = JSON.stringify({ event: 'payment.succeeded', invoiceId: invoice.id });
 
     const hasil = pelanggan().handleGatewayWebhook(body, 'a'.repeat(64), 'rahasia-webhook-uji');
@@ -324,7 +324,7 @@ describe('Webhook payment gateway', () => {
 /* ================= Aturan periode dipakai bersama ================= */
 
 describe('Perhitungan periode', () => {
-  it('TC-PAY-15 — dua jalur pembayaran memakai aturan yang sama', () => {
+  it('TC-PAY-15 — dua jalur pembayaran memakai aturan yang sama', async () => {
     const cepat = periodAfterPayment(
       { period_start: '2026-08-01T00:00:00.000Z', period_end: '2026-09-01T00:00:00.000Z' },
       'monthly',
