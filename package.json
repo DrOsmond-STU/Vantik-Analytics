@@ -1,0 +1,30 @@
+{
+  "name": "vantik-analytics",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vantik Analytics — Enterprise Analytics Intelligence Platform",
+  "workspaces": [
+    "shared/design-tokens",
+    "services",
+    "frontend/web-app"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @vantik/design-tokens && npm run build --workspace @vantik/api && npm run build --workspace @vantik/web-app",
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm run dev --workspace @vantik/api\" \"npm run dev --workspace @vantik/web-app\"",
+    "start": "npm run start --workspace @vantik/api",
+    "seed": "npm run seed --workspace @vantik/api",
+    "test": "npm run test --workspace @vantik/api && npm run test --workspace @vantik/web-app",
+    "test:coverage": "npm run test:coverage --workspace @vantik/api",
+    "typecheck": "npm run typecheck --workspace @vantik/api && npm run typecheck --workspace @vantik/web-app",
+    "package": "node scripts/package-deploy.mjs",
+    "start:deploy": "node deploy/app.js",
+    "test:web": "npm run test --workspace @vantik/web-app"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

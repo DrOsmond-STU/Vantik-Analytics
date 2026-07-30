@@ -1,0 +1,139 @@
+# Gate CI/CD — TESTING.md Bagian 12, DEPLOYMENT.md Bagian 3.
+#
+# Sebuah perubahan TIDAK DAPAT digabung kecuali:
+#   - seluruh unit test lulus & cakupan tidak turun dari baseline;
+#   - SAST & dependency scan tanpa temuan Critical/High baru;
+#   - test case yang berasal dari checklist PRD untuk modul terkait lulus.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build, typecheck & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck & build (API + web app)
+        run: npm run build
+
+      # Ambang cakupan ditegakkan vitest.config.ts; kegagalan memblokir merge.
+      - name: Unit, integration & E2E tests with coverage
+        run: npm run test:coverage
+
+      # Uji komponen/DOM berjalan di proyek vitest tersendiri karena butuh jsdom,
+      # sedangkan tsconfig services sengaja tidak memuat `lib: DOM`. Dijalankan sebagai
+      # langkah terpisah agar kegagalannya langsung terbaca sebagai kegagalan frontend.
+      - name: Web app component tests
+        run: npm run test:web
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: services/coverage/
+          retention-days: 14
+
+  dependency-scan:
+    name: Dependency / SCA scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      # Kerentanan Critical/High memblokir merge (TESTING.md Bagian 10).
+      - name: npm audit (high & critical block the merge)
+        run: npm audit --audit-level=high
+
+  sast:
+    name: SAST
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v3
+        id: codeql
+        with:
+          output: sarif-results
+
+      # Temuan diringkas ke dalam log job DAN disimpan sebagai artefak.
+      #
+      # Tanpa ini, gerbang SAST hanya memberi tahu peninjau "N temuan high" tanpa cara
+      # melihat isinya kecuali ia punya akses tab Security repositori. Gerbang yang tidak
+      # dapat dibaca tidak dapat ditindaklanjuti — dan gerbang yang tidak dapat
+      # ditindaklanjuti akhirnya diabaikan.
+      - name: Ringkas temuan SAST
+        if: always()
+        run: |
+          file=sarif-results/javascript.sarif
+          if [ ! -f "$file" ]; then echo "SARIF tidak ditemukan di $file"; exit 0; fi
+          node -e '
+            const sarif = JSON.parse(require("fs").readFileSync("sarif-results/javascript.sarif", "utf8"));
+            const run = sarif.runs[0];
+            const rules = new Map((run.tool.driver.rules ?? []).map((r) => [r.id, r]));
+            const results = run.results ?? [];
+            if (results.length === 0) { console.log("Tidak ada temuan."); process.exit(0); }
+            const byRule = new Map();
+            for (const r of results) {
+              const rule = rules.get(r.ruleId) ?? {};
+              const severity = rule.properties?.["security-severity"] ?? rule.defaultConfiguration?.level ?? "?";
+              const loc = r.locations?.[0]?.physicalLocation;
+              const where = loc ? `${loc.artifactLocation.uri}:${loc.region?.startLine ?? "?"}` : "?";
+              const key = `${r.ruleId} [severity ${severity}] ${rule.shortDescription?.text ?? ""}`;
+              if (!byRule.has(key)) byRule.set(key, []);
+              byRule.get(key).push(where);
+            }
+            console.log(`${results.length} temuan, ${byRule.size} aturan:\n`);
+            for (const [rule, places] of [...byRule].sort((a, b) => b[1].length - a[1].length)) {
+              console.log(`── ${rule} — ${places.length}x`);
+              for (const p of places) console.log(`     ${p}`);
+            }
+          '
+
+      - name: Upload SARIF
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-sarif
+          path: sarif-results/
+          retention-days: 14
+
+  tenant-isolation-gate:
+    name: Tenant isolation (release-blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      # SECURITY.md 16.1 menuntut pengujian lintas-tenant memblokir rilis bila gagal —
+      # dijalankan sebagai job tersendiri agar kegagalannya tidak tersamar di antara
+      # ratusan test lain.
+      - name: Cross-tenant access must always fail
+        working-directory: services
+        run: npx vitest run tests/security.test.ts

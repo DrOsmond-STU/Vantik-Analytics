@@ -1,0 +1,119 @@
+# Topologi namespace & network policy — DEPLOYMENT.md Bagian 2, SECURITY.md Bagian 10.
+#
+# Setiap namespace memiliki network policy terpisah. Namespace `identity` dan `audit`
+# menerima trafik masuk PALING TERBATAS: keduanya tidak dapat dihubungi langsung dari
+# ingress publik, hanya dari layanan internal yang memang memerlukannya.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data-platform
+  labels: { app.kubernetes.io/part-of: vantik-analytics, zone: data }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai
+  labels: { app.kubernetes.io/part-of: vantik-analytics, zone: compute }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: presentation
+  labels: { app.kubernetes.io/part-of: vantik-analytics, zone: presentation }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ops
+  labels: { app.kubernetes.io/part-of: vantik-analytics, zone: ops }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: identity
+  labels: { app.kubernetes.io/part-of: vantik-analytics, zone: restricted }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: audit
+  labels: { app.kubernetes.io/part-of: vantik-analytics, zone: restricted }
+---
+# Default deny untuk seluruh namespace terbatas — komunikasi harus dibuka eksplisit
+# (prinsip least privilege, SECURITY.md Bagian 2).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: identity
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: audit
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# identity-service hanya menerima trafik dari layanan aplikasi, bukan dari ingress publik.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-ingress-from-app-zones
+  namespace: identity
+spec:
+  podSelector:
+    matchLabels: { app: identity-service }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { zone: presentation }
+        - namespaceSelector:
+            matchLabels: { zone: data }
+      ports:
+        - protocol: TCP
+          port: 4000
+---
+# audit-service bersifat APPEND-ONLY: menerima tulisan dari layanan lain, namun
+# pembacaannya dibatasi ke presentation (layar Log Aktivitas untuk Auditor).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: audit-ingress-restricted
+  namespace: audit
+spec:
+  podSelector:
+    matchLabels: { app: audit-service }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { app.kubernetes.io/part-of: vantik-analytics }
+      ports:
+        - protocol: TCP
+          port: 4000
+---
+# Endpoint sematan berjalan di jalur publik TERPISAH dengan permukaan API minimal
+# (ARCHITECTURE.md 4.5) — kompromi di sini tidak memberi jalan ke layanan internal.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: embed-edge-isolated
+  namespace: presentation
+spec:
+  podSelector:
+    matchLabels: { app: embed-edge }
+  policyTypes: [Egress]
+  egress:
+    # Hanya boleh menghubungi semantic layer; tidak ke identity, tidak ke vault.
+    - to:
+        - namespaceSelector:
+            matchLabels: { zone: data }
+      ports:
+        - protocol: TCP
+          port: 4000

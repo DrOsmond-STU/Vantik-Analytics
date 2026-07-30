@@ -1,0 +1,1481 @@
+/*
+ * Komponen inti — DESIGN.md Bagian 6.
+ * Semua nilai warna/tipografi/spacing lewat token (tokens.css); tidak ada hex/px
+ * hardcode di komponen (TASK_INSTRUCTION.md Bagian 7).
+ */
+
+@import '@vantik/design-tokens/tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--text-900);
+  font-family: var(--font-body);
+  font-size: 13px;
+  transition: var(--theme-transition);
+}
+
+h1,
+h2,
+h3,
+.display {
+  font-family: var(--font-display);
+  margin: 0;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+/* Fokus terlihat untuk navigasi keyboard — tidak dihilangkan demi estetika
+   (DESIGN.md Bagian 9). */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* ---------- shell ---------- */
+.shell {
+  display: grid;
+  grid-template-columns: 236px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: var(--chrome);
+  color: var(--chrome-text);
+  padding: 20px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--chrome-border) transparent;
+}
+.sidebar::-webkit-scrollbar {
+  width: 5px;
+}
+.sidebar::-webkit-scrollbar-thumb {
+  background: var(--chrome-border);
+  border-radius: 3px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px 22px;
+}
+.brand .mark {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, var(--accent), #0b6e6e);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.brand .mark svg {
+  width: 16px;
+  height: 16px;
+}
+.brand .name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 16.5px;
+  color: var(--chrome-text-strong);
+  letter-spacing: 0.2px;
+}
+.brand .name span {
+  color: var(--accent);
+}
+
+.navgroup {
+  margin-top: 14px;
+}
+.navgroup .label {
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--chrome-muted);
+  padding: 8px 12px 6px;
+  font-weight: 600;
+}
+
+/* Label mengalir mengikuti konten — TIDAK boleh lebar tetap, karena teks Indonesia
+   15–25% lebih panjang dari padanan Inggrisnya (DESIGN.md 3.1 & 8.4). */
+.navitem {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  font-size: 13.6px;
+  font-weight: 500;
+  color: var(--chrome-text);
+  cursor: pointer;
+  transition: 0.15s;
+  border: 1px solid transparent;
+  width: 100%;
+  text-align: left;
+  background: none;
+  font-family: inherit;
+  min-height: 32px;
+}
+.navitem svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  opacity: 0.85;
+}
+.navitem:hover {
+  background: var(--chrome-hover);
+  color: var(--chrome-text-strong);
+}
+.navitem.active {
+  background: var(--chrome-active);
+  color: var(--chrome-text-strong);
+  border-color: var(--chrome-border);
+}
+.navitem.active svg {
+  opacity: 1;
+  color: var(--accent);
+}
+.navitem.locked {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.navitem .dot {
+  margin-left: auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bad);
+  flex: none;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  border-top: 1px solid var(--chrome-border);
+  padding-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--chrome-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--chrome-text-strong);
+  flex: none;
+}
+.sidebar-foot .who {
+  font-size: 12.5px;
+  line-height: 1.35;
+  min-width: 0;
+}
+.sidebar-foot .who b {
+  color: var(--chrome-text-strong);
+  font-weight: 600;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-foot .who span {
+  color: var(--chrome-muted);
+}
+
+.main {
+  min-width: 0;
+}
+.topbar {
+  min-height: 64px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 26px;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  gap: 14px;
+  flex-wrap: wrap;
+  transition: var(--theme-transition);
+}
+.crumb {
+  font-size: 13px;
+  color: var(--text-400);
+}
+.crumb b {
+  color: var(--text-900);
+  font-weight: 600;
+}
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.searchbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 11px;
+  min-width: 200px;
+  color: var(--text-400);
+  font-size: 12.8px;
+}
+.searchbox svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.searchbox input {
+  border: none;
+  background: none;
+  outline: none;
+  color: var(--text-900);
+  font-family: inherit;
+  font-size: inherit;
+  width: 100%;
+}
+
+/* Target sentuh minimum 32×32px untuk tablet lapangan (DESIGN.md Bagian 9). */
+.iconbtn {
+  min-width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  position: relative;
+  color: var(--text-600);
+  padding: 0 8px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  gap: 6px;
+}
+.iconbtn svg {
+  width: 16px;
+  height: 16px;
+}
+.badge-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--bad);
+  border: 2px solid var(--surface);
+}
+
+.content {
+  padding: 26px 26px 60px;
+  max-width: 1360px;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.page-head h1 {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0 0 4px;
+}
+.page-head p {
+  margin: 0;
+  color: var(--text-600);
+  font-size: 13px;
+}
+.head-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  font-family: var(--font-body);
+  font-size: 12.8px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  padding: 9px 15px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-900);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  min-height: 32px;
+}
+.btn svg {
+  width: 14px;
+  height: 14px;
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn.ghost {
+  background: transparent;
+}
+.btn.danger {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  transition: var(--theme-transition);
+}
+.grid {
+  display: grid;
+  gap: 16px;
+}
+.g-12 {
+  grid-template-columns: repeat(12, 1fr);
+}
+
+/* ---------- AI narrative banner (selalu gelap — DESIGN.md 7.3) ---------- */
+.ai-banner {
+  grid-column: span 12;
+  background: linear-gradient(120deg, #0b1220, #122036 60%, #0e3b3b);
+  border-radius: var(--radius);
+  padding: 18px 22px;
+  color: #eaf2f2;
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.ai-banner .ico {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(14, 165, 165, 0.18);
+  border: 1px solid rgba(14, 165, 165, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.ai-banner .ico svg {
+  width: 17px;
+  height: 17px;
+  color: #2dd4bf;
+}
+.ai-banner .eyebrow {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: #2dd4bf;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.ai-banner p {
+  margin: 0;
+  font-size: 13.4px;
+  line-height: 1.65;
+  color: #d6e2e4;
+  max-width: 900px;
+}
+.ai-banner b {
+  color: #fff;
+  font-weight: 600;
+}
+.ai-banner .chip {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-xs);
+  padding: 1px 7px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: #fff;
+  margin: 0 2px;
+}
+
+/* ---------- Threshold Ring (elemen tanda tangan — DESIGN.md 6) ---------- */
+.kpi-card {
+  grid-column: span 3;
+  padding: 16px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+.ring {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.ring::before {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  background: var(--surface);
+  border-radius: 50%;
+}
+/* Status tidak pernah disampaikan lewat warna saja — angka selalu menyertai
+   (DESIGN.md Bagian 9). */
+.ring .val {
+  position: relative;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--text-900);
+}
+.kpi-meta {
+  min-width: 0;
+}
+.kpi-meta .name {
+  font-size: 12.6px;
+  font-weight: 600;
+  color: var(--text-900);
+  margin-bottom: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kpi-meta .row {
+  font-size: 11px;
+  color: var(--text-400);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.status-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 5px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  width: fit-content;
+}
+.status-good {
+  background: var(--good-soft);
+  color: var(--on-good-soft);
+}
+.status-warn {
+  background: var(--warn-soft);
+  color: var(--on-warn-soft);
+}
+.status-bad {
+  background: var(--bad-soft);
+  color: var(--on-bad-soft);
+}
+.status-info {
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+}
+.status-muted {
+  background: var(--canvas);
+  color: var(--text-600);
+  border: 1px solid var(--border);
+}
+
+.panel {
+  grid-column: span 8;
+  padding: 20px;
+}
+.panel.small {
+  grid-column: span 4;
+}
+.panel.full {
+  grid-column: span 12;
+}
+.panel.half {
+  grid-column: span 6;
+}
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.panel-head h3 {
+  font-size: 14.5px;
+  margin: 0;
+  font-weight: 700;
+}
+.panel-head .sub {
+  font-size: 11.5px;
+  color: var(--text-400);
+}
+
+/* Segmented control: lebar mengikuti konten (DESIGN.md 3.1). */
+.seg {
+  display: flex;
+  gap: 4px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+  width: fit-content;
+}
+.seg button {
+  font-size: 11px;
+  padding: 5px 10px;
+  border-radius: var(--radius-xs);
+  color: var(--text-400);
+  cursor: pointer;
+  font-weight: 500;
+  border: none;
+  background: none;
+  font-family: inherit;
+  white-space: nowrap;
+  min-height: 24px;
+}
+.seg button.on {
+  background: var(--surface);
+  color: var(--text-900);
+  box-shadow: var(--shadow);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.6px;
+}
+th {
+  text-align: left;
+  color: var(--text-400);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-900);
+  vertical-align: top;
+}
+tbody tr:last-child td {
+  border-bottom: none;
+}
+tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--canvas) 55%, transparent);
+}
+td.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+
+.legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.legend .item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-600);
+}
+.legend .sw {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+}
+
+.field {
+  margin-bottom: 14px;
+}
+/* Label terpisah DI ATAS input — instruksi penting tidak boleh hilang saat
+   pengguna mulai mengetik (DESIGN.md 8.4). */
+.field label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-600);
+  margin-bottom: 6px;
+}
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  font-family: var(--font-body);
+  font-size: 12.3px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-900);
+  min-height: 32px;
+}
+.field .hint {
+  font-size: 10.5px;
+  color: var(--text-400);
+  margin-top: 4px;
+}
+.field-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.field-row > .field {
+  flex: 1 1 180px;
+}
+
+.note {
+  grid-column: span 12;
+  font-size: 11.5px;
+  color: var(--text-400);
+  padding: 4px 2px;
+}
+.note.warn {
+  color: var(--on-warn-soft);
+  background: var(--warn-soft);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+}
+.note.info {
+  color: var(--text-600);
+  background: var(--accent-soft);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+}
+
+.empty {
+  padding: 34px 20px;
+  text-align: center;
+  color: var(--text-600);
+  font-size: 13px;
+}
+.empty .cta {
+  margin-top: 12px;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.toggle {
+  width: 34px;
+  height: 19px;
+  border-radius: 99px;
+  background: var(--good);
+  position: relative;
+  flex: none;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+}
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+}
+.toggle.off {
+  background: var(--border);
+}
+.toggle.off::after {
+  left: 2px;
+  right: auto;
+}
+
+.feed-item {
+  display: flex;
+  gap: 11px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+}
+.feed-item:last-child {
+  border-bottom: none;
+}
+.feed-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex: none;
+}
+.feed-time {
+  font-size: 11px;
+  color: var(--text-400);
+  margin-top: 2px;
+}
+
+/* ---------- Paper (Report Designer): SELALU putih di kedua mode ---------- */
+.paper {
+  width: 420px;
+  max-width: 100%;
+  background: #fff;
+  color: #101828;
+  box-shadow: 0 6px 20px rgba(16, 24, 40, 0.12);
+  padding: 26px 24px;
+  position: relative;
+  min-height: 560px;
+  border-radius: 2px;
+}
+.paper .wm {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(-28deg);
+  font-size: 40px;
+  font-weight: 800;
+  color: rgba(16, 24, 40, 0.055);
+  letter-spacing: 3px;
+  pointer-events: none;
+  font-family: var(--font-display);
+}
+.paper-head {
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 2px solid #0b1220;
+  padding-bottom: 8px;
+  margin-bottom: 14px;
+}
+.paper-foot {
+  position: absolute;
+  bottom: 20px;
+  left: 24px;
+  right: 24px;
+  border-top: 1px solid #e3e7f0;
+  padding-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: #8d96aa;
+}
+.sig-block {
+  margin-top: 26px;
+  display: flex;
+  justify-content: flex-end;
+}
+.sig-box {
+  width: 160px;
+  text-align: center;
+  font-size: 9px;
+  color: #4a5468;
+}
+.sig-box .line {
+  border-top: 1px solid #101828;
+  margin-top: 30px;
+  padding-top: 5px;
+}
+
+/* ---------- Visualization gallery ---------- */
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+}
+.viz-card {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 6px 9px;
+  text-align: center;
+  cursor: pointer;
+  transition: 0.15s;
+}
+.viz-card:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.viz-card .lbl {
+  font-size: 10.3px;
+  font-weight: 600;
+  margin-top: 5px;
+  color: var(--text-900);
+}
+.viz-card .fam {
+  font-size: 9.5px;
+  color: var(--text-400);
+}
+
+/* ---------- Dashboard designer ---------- */
+.designer {
+  display: grid;
+  grid-template-columns: 220px 1fr 240px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+  min-height: 560px;
+}
+.dz-panel {
+  padding: 14px;
+  border-right: 1px solid var(--border);
+  overflow: auto;
+}
+.dz-panel:last-child {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+.dz-title {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-400);
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.widget-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  margin-bottom: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-600);
+  cursor: grab;
+  background: var(--canvas);
+  width: 100%;
+  font-family: inherit;
+  text-align: left;
+}
+.canvas-area {
+  background:
+    linear-gradient(var(--border) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(90deg, var(--border) 1px, transparent 1px) 0 0 / 24px 24px,
+    var(--canvas);
+  padding: 18px;
+  overflow: auto;
+}
+.canvas-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+.w-block {
+  background: var(--surface);
+  border: 1.5px dashed transparent;
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 12px;
+  position: relative;
+  cursor: pointer;
+}
+.w-block.sel {
+  border-color: var(--accent);
+}
+.w-block .tag {
+  position: absolute;
+  top: -11px;
+  left: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+
+/* ---------- AI Copilot (selalu gelap — DESIGN.md 7.3) ---------- */
+.copilot-fab {
+  position: fixed;
+  right: 26px;
+  bottom: 26px;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: #0b1220;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(11, 18, 32, 0.35);
+  z-index: 20;
+  border: none;
+}
+.copilot-fab svg {
+  width: 22px;
+  height: 22px;
+  color: #2dd4bf;
+}
+.copilot-drawer {
+  position: fixed;
+  right: 26px;
+  bottom: 92px;
+  width: min(380px, calc(100vw - 52px));
+  max-height: 70vh;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-raised);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 20;
+}
+.cop-head {
+  background: #0b1220;
+  color: #fff;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.cop-head svg {
+  width: 15px;
+  height: 15px;
+  color: #2dd4bf;
+}
+.cop-body {
+  padding: 14px 16px;
+  overflow: auto;
+  flex: 1;
+  background: var(--canvas);
+}
+.bubble-q {
+  background: #0b1220;
+  color: #fff;
+  padding: 9px 12px;
+  border-radius: 11px 11px 3px 11px;
+  font-size: 12.6px;
+  margin-bottom: 10px;
+  max-width: 88%;
+  margin-left: auto;
+}
+.bubble-a {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 11px 12px;
+  border-radius: 11px 11px 11px 3px;
+  font-size: 12.4px;
+  line-height: 1.6;
+  color: var(--text-900);
+  margin-bottom: 10px;
+}
+.bubble-a .fac {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11.7px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.bubble-a .fac:last-child {
+  border-bottom: none;
+}
+.bubble-a .fac b {
+  font-family: var(--font-mono);
+}
+.cop-input {
+  padding: 11px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  background: var(--surface);
+}
+.cop-input input {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  font-size: 12.4px;
+  font-family: var(--font-body);
+  background: var(--surface);
+  color: var(--text-900);
+}
+.cop-input button {
+  min-width: 36px;
+  border: none;
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+/* ---------- Login ---------- */
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--canvas);
+}
+.login-card {
+  width: min(420px, 100%);
+  padding: 30px 28px;
+}
+.login-card .brand {
+  padding: 0 0 20px;
+}
+
+/* ---------- Bar & chart primitives ---------- */
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.bar-row .lbl {
+  min-width: 140px;
+  color: var(--text-600);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bar-track {
+  flex: 1;
+  height: 8px;
+  background: var(--canvas);
+  border-radius: 99px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.bar-fill {
+  height: 100%;
+  background: var(--series-1);
+}
+.bar-row .val {
+  min-width: 72px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.meter {
+  height: 8px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  overflow: hidden;
+}
+.meter > span {
+  display: block;
+  height: 100%;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+.stat-tile {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  background: var(--canvas);
+}
+.stat-tile .k {
+  font-size: 10.5px;
+  color: var(--text-400);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.stat-tile .v {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.heat-cell {
+  padding: 6px 8px;
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: center;
+}
+
+.zone-map {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+}
+.asset-tile {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  background: var(--canvas);
+  cursor: pointer;
+}
+.asset-tile .code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-400);
+}
+.asset-tile .nm {
+  font-weight: 600;
+  font-size: 12.6px;
+  margin: 3px 0 8px;
+}
+
+.pill-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ---------- Responsif — DESIGN.md Bagian 10 ---------- */
+@media (max-width: 1100px) {
+  .viz-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .shell {
+    grid-template-columns: 76px 1fr;
+  }
+  /* Tablet: sidebar menyempit ke ikon saja */
+  .sidebar .navitem span.lbl,
+  .sidebar .navgroup .label,
+  .sidebar .brand .name,
+  .sidebar-foot .who {
+    display: none;
+  }
+  .sidebar .navitem {
+    justify-content: center;
+  }
+  .designer {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: 240px;
+    z-index: 30;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+  }
+  .sidebar.open {
+    transform: none;
+  }
+  .sidebar .navitem span.lbl,
+  .sidebar .navgroup .label,
+  .sidebar .brand .name,
+  .sidebar-foot .who {
+    display: revert;
+  }
+  .sidebar .navitem {
+    justify-content: flex-start;
+  }
+  .kpi-card {
+    grid-column: span 6;
+  }
+  .panel,
+  .panel.small,
+  .panel.half {
+    grid-column: span 12;
+  }
+  .viz-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .content {
+    padding: 18px 14px 60px;
+  }
+  .topbar {
+    padding: 10px 14px;
+  }
+  .searchbox {
+    display: none;
+  }
+  /* Tabel lebar beralih ke tampilan kartu per baris (DESIGN.md Bagian 10) */
+  table.stack-mobile thead {
+    display: none;
+  }
+  table.stack-mobile tr {
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 10px;
+    padding: 8px;
+  }
+  table.stack-mobile td {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    border: none;
+    padding: 5px 2px;
+  }
+  table.stack-mobile td::before {
+    content: attr(data-label);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-400);
+    font-weight: 600;
+  }
+}
+
+/* Tanpa animasi berlebihan pada angka KPI di layar monitoring 24 jam
+   (DESIGN.md Bagian 11) — hanya transisi halaman yang lembut. */
+.view-enter {
+  animation: fade 0.22s ease;
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- Halaman publik: depan, berlangganan, pemulihan ---------- */
+/*
+ * Memakai token yang sama dengan bagian dalam aplikasi. Pengunjung yang kemudian
+ * berlangganan harus mengenali produk yang sama, bukan merasa berpindah aplikasi.
+ */
+.public-shell {
+  min-height: 100vh;
+  background: var(--canvas);
+  color: var(--text-900);
+  display: flex;
+  flex-direction: column;
+}
+.public-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px clamp(16px, 5vw, 56px);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.public-nav .brand {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-900);
+}
+.public-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hero {
+  padding: clamp(40px, 8vw, 96px) clamp(16px, 5vw, 56px) clamp(28px, 5vw, 56px);
+  max-width: 1180px;
+  margin: 0 auto;
+  width: 100%;
+}
+.hero-copy { max-width: 44rem; }
+.hero-copy h1 {
+  font-size: clamp(30px, 5.2vw, 52px);
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  margin: 8px 0 14px;
+  text-wrap: balance;
+}
+.hero-copy > p {
+  font-size: clamp(15px, 1.6vw, 18px);
+  color: var(--text-600);
+  margin: 0 0 26px;
+  max-width: 38rem;
+}
+.hero-cta { display: flex; flex-wrap: wrap; gap: 10px; }
+.hero-note { margin-top: 14px; font-size: 12.5px; color: var(--text-400); }
+
+.public-section {
+  padding: clamp(28px, 5vw, 64px) clamp(16px, 5vw, 56px);
+  max-width: 1180px;
+  margin: 0 auto;
+  width: 100%;
+}
+.public-section > h2 {
+  font-size: clamp(22px, 3vw, 30px);
+  letter-spacing: -0.02em;
+  margin: 0 0 6px;
+  text-wrap: balance;
+}
+.public-section .section-sub {
+  color: var(--text-600);
+  margin: 0 0 22px;
+  max-width: 42rem;
+  font-size: 14.5px;
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+.feature-card h3 { margin: 0 0 8px; font-size: 16px; letter-spacing: -0.01em; }
+.feature-card p { margin: 0; color: var(--text-600); font-size: 13.5px; line-height: 1.6; }
+.feature-card ul { margin: 0; padding-left: 18px; color: var(--text-600); font-size: 13px; }
+.feature-card li { margin-bottom: 4px; }
+
+.plan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+.plan-card { display: grid; gap: 10px; }
+.plan-name { font-size: 13px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-600); }
+.plan-price { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.plan-price .per { font-size: 13px; font-weight: 500; color: var(--text-600); margin-left: 2px; }
+.plan-annual { font-size: 12.5px; color: var(--text-400); margin-top: -6px; }
+.plan-features { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-600); }
+.plan-features li { margin-bottom: 4px; }
+
+/* Pemilih jangka waktu berlangganan (1 / 3 / 6 / 12 bulan). */
+.cycle-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+.cycle-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-600);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.cycle-option:hover { border-color: var(--accent); }
+.cycle-option.is-active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.cycle-save {
+  font-size: 11.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--ok-bg, rgba(16, 148, 96, 0.12));
+  color: var(--ok, #109460);
+}
+.cycle-option.is-active .cycle-save { background: rgba(255, 255, 255, 0.22); color: #fff; }
+
+.public-form {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: clamp(24px, 5vw, 56px) 16px;
+}
+.signup-card { width: min(520px, 100%); }
+.public-form h1 { font-size: 20px; margin: 0 0 4px; }
+
+.login-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 14px;
+}
+.linkbtn {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.linkbtn:hover { color: var(--text-900); }
+
+.public-foot {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding: 18px clamp(16px, 5vw, 56px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  font-size: 12.5px;
+  color: var(--text-400);
+}

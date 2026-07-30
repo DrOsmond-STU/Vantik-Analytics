@@ -1,0 +1,520 @@
+/**
+ * Pengujian keamanan yang MEMBLOKIR RILIS.
+ *
+ * SECURITY.md 16.1: "Pengujian otomatis lintas-tenant wajib ada di pipeline: mencoba
+ * mengakses data tenant lain harus selalu gagal, dan pengujian ini memblokir rilis
+ * bila gagal."
+ *
+ * TESTING.md Bagian 4: matriks pengujian negatif RBAC & Row-Level Security.
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  contextFor,
+  createHarness,
+  createUser,
+  fingerprint,
+  provisionTenant,
+  syntheticCsv,
+  type Harness,
+} from './helpers.ts';
+import { DatasetService } from '../src/data-platform-service/datasets.ts';
+import { MAX_FORMULA_LENGTH, tokenizeFormula } from '../src/data-platform-service/modeling.ts';
+import { AuthorizationService } from '../src/identity-service/index.ts';
+import { hashComponents } from '../src/identity-service/deviceFingerprint.ts';
+import { parseIntent } from '../src/ai-engine-service/index.ts';
+import { newId } from '../src/platform/db.ts';
+import { ForbiddenError, NotFoundError } from '../src/platform/errors.ts';
+import { TenantScopedDb } from '../src/platform/tenancy.ts';
+import { can, resolvePermissions, STANDARD_ROLES } from '../src/platform/rbac.ts';
+import { IdempotencyStore, RateLimiter } from '../src/platform/http.ts';
+import { RateLimitedError } from '../src/platform/errors.ts';
+
+let harness: Harness;
+
+beforeEach(() => {
+  harness = createHarness();
+});
+afterEach(() => harness.cleanup());
+
+describe('Isolasi tenant (SECURITY.md 16.1) — memblokir rilis bila gagal', () => {
+  it('TC-TEN-01 — kueri satu tenant tidak pernah mengembalikan data tenant lain', () => {
+    const a = provisionTenant(harness, { slug: 'alpha1' });
+    const b = provisionTenant(harness, { slug: 'bravo1' });
+
+    const ctxA = contextFor(harness, a.tenantId, ['super_admin']);
+    const ctxB = contextFor(harness, b.tenantId, ['super_admin']);
+
+    new DatasetService(ctxA).upload({ filename: 'alpha.csv', content: Buffer.from(syntheticCsv({ rows: 5 })) });
+    new DatasetService(ctxB).upload({ filename: 'bravo.csv', content: Buffer.from(syntheticCsv({ rows: 5 })) });
+
+    const seenByA = new DatasetService(ctxA).list();
+    const seenByB = new DatasetService(ctxB).list();
+
+    expect(seenByA).toHaveLength(1);
+    expect(seenByB).toHaveLength(1);
+    expect(seenByA[0]!.name).toBe('alpha');
+    expect(seenByB[0]!.name).toBe('bravo');
+  });
+
+  it('TC-TEN-02 — mengambil objek milik tenant lain dengan ID benar tetap gagal', () => {
+    const a = provisionTenant(harness, { slug: 'alpha2' });
+    const b = provisionTenant(harness, { slug: 'bravo2' });
+
+    const ctxA = contextFor(harness, a.tenantId, ['super_admin']);
+    const ctxB = contextFor(harness, b.tenantId, ['super_admin']);
+
+    const uploaded = new DatasetService(ctxA).upload({
+      filename: 'rahasia.csv',
+      content: Buffer.from(syntheticCsv({ rows: 5 })),
+    });
+
+    // Tenant B mengetahui ID persisnya, namun tetap tidak boleh mendapatkannya.
+    expect(() => new DatasetService(ctxB).get(uploaded.dataset.id)).toThrow(NotFoundError);
+  });
+
+  it('TC-TEN-03 — tenant_id yang dikirim pemanggil diabaikan; konteks sesi yang menang', () => {
+    const a = provisionTenant(harness, { slug: 'alpha3' });
+    const b = provisionTenant(harness, { slug: 'bravo3' });
+    const ctxA = contextFor(harness, a.tenantId, ['super_admin']);
+
+    // Mencoba menyuntikkan tenant_id tenant lain pada INSERT.
+    ctxA.db.insert('employee_master', {
+      id: 'emp_injected',
+      tenant_id: b.tenantId,
+      full_name: 'Penyusup',
+      nik: 'NIK-INJ',
+      division: 'X',
+      position: 'Y',
+      email: 'inj@test',
+      phone: null,
+      status: 'active',
+      status_changed_at: null,
+      access_review_due_at: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    const stored = harness.db.prepare('SELECT tenant_id FROM employee_master WHERE id = ?').get('emp_injected') as {
+      tenant_id: string;
+    };
+    expect(stored.tenant_id).toBe(a.tenantId);
+    expect(stored.tenant_id).not.toBe(b.tenantId);
+  });
+
+  it('TC-TEN-04 — SQL mentah tanpa filter tenant ditolak sebelum dieksekusi', () => {
+    const a = provisionTenant(harness, { slug: 'alpha4' });
+    const ctx = contextFor(harness, a.tenantId, ['super_admin']);
+
+    expect(() => ctx.db.raw('SELECT * FROM dataset_catalog')).toThrow(/tenant_id/i);
+    expect(() => ctx.db.raw('SELECT * FROM dataset_catalog WHERE tenant_id = :tenant_id')).not.toThrow();
+  });
+
+  it('TC-TEN-05 — konteks tanpa tenant terverifikasi ditolak (fail secure)', () => {
+    expect(() => new TenantScopedDb(harness.db, '')).toThrow(/verified tenant/i);
+  });
+
+  it('TC-TEN-06 — globalRead() menolak tabel yang memuat data tenant', () => {
+    const a = provisionTenant(harness, { slug: 'alpha6' });
+    const ctx = contextFor(harness, a.tenantId, ['super_admin']);
+    expect(() => ctx.db.globalRead('dataset_catalog')).toThrow(/globalRead\(\) refused/);
+    expect(() => ctx.db.globalRead('plans')).not.toThrow();
+  });
+});
+
+describe('RBAC negatif (TESTING.md Bagian 4)', () => {
+  it('TC-RBAC-01 — Supervisor mengakses Otorisasi User via API langsung ditolak 403 dan tercatat', () => {
+    const tenant = provisionTenant(harness);
+    const supervisorId = createUser(harness, tenant.tenantId, 'supervisor@test.id', 'supervisor');
+    const ctx = contextFor(harness, tenant.tenantId, ['supervisor'], { userId: supervisorId });
+
+    expect(() => new AuthorizationService(ctx).listUsers()).toThrow(ForbiddenError);
+
+    // Percobaan akses ditolak WAJIB tercatat sebagai potensi insiden (SECURITY.md 9).
+    const { rows } = harness.audit.query(tenant.tenantId, { outcome: 'denied' });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0]!.action).toBe('access.denied');
+    expect(rows[0]!.module).toBe('Otorisasi User');
+  });
+
+  it('TC-RBAC-02 — deny overrides allow diuji eksplisit, bukan diasumsikan', () => {
+    // Super Admin punya `*:*` tetapi ditolak eksplisit untuk audit:write.
+    const superAdmin = STANDARD_ROLES.find((r) => r.code === 'super_admin')!;
+    const effective = resolvePermissions([superAdmin]);
+
+    expect(can(effective, 'dataset:write')).toBe(true);
+    expect(can(effective, 'audit:write')).toBe(false);
+    expect(can(effective, 'audit:delete')).toBe(false);
+  });
+
+  it('TC-RBAC-03 — dua peran dengan hak bertentangan: penolakan menang', () => {
+    const auditor = STANDARD_ROLES.find((r) => r.code === 'auditor')!;
+    const analyst = STANDARD_ROLES.find((r) => r.code === 'business_analyst')!;
+
+    // Business Analyst mengizinkan dashboard:write; Auditor menolaknya eksplisit.
+    const effective = resolvePermissions([analyst, auditor]);
+    expect(can(effective, 'dashboard:write')).toBe(false);
+    expect(can(effective, 'dashboard:read')).toBe(true);
+  });
+
+  it('TC-RBAC-04 — Data Engineer tidak dapat menyertifikasi dataset (kewenangan Data Steward)', () => {
+    const engineer = STANDARD_ROLES.find((r) => r.code === 'data_engineer')!;
+    const effective = resolvePermissions([engineer]);
+    expect(can(effective, 'dataset:upload')).toBe(true);
+    expect(can(effective, 'dataquality:certify')).toBe(false);
+  });
+
+  it('TC-RBAC-05 — Platform Operator tidak punya akses baca data analitik pelanggan', () => {
+    const operator = STANDARD_ROLES.find((r) => r.code === 'platform_operator')!;
+    const effective = resolvePermissions([operator]);
+    expect(can(effective, 'tenant:provision')).toBe(true);
+    expect(can(effective, 'dataset:read')).toBe(false);
+    expect(can(effective, 'executive_cockpit:read')).toBe(false);
+  });
+
+  it('TC-RBAC-06 — pengguna tidak dapat mengubah hak aksesnya sendiri', () => {
+    const tenant = provisionTenant(harness);
+    const ctx = contextFor(harness, tenant.tenantId, ['super_admin'], { userId: tenant.adminUserId });
+    expect(() => new AuthorizationService(ctx).setRoles(tenant.adminUserId, ['auditor'])).toThrow(
+      /cannot_change_own_access/,
+    );
+  });
+
+  it('TC-RBAC-07 — aksi sensitif menuntut re-autentikasi segar', () => {
+    const tenant = provisionTenant(harness);
+    const other = createUser(harness, tenant.tenantId, 'other@test.id', 'business_analyst');
+    // freshAuth: false → tidak ada re-autentikasi dalam jendela waktu.
+    const stale = contextFor(harness, tenant.tenantId, ['super_admin'], {
+      userId: tenant.adminUserId,
+      freshAuth: false,
+    });
+    expect(() => new AuthorizationService(stale).setRoles(other, ['auditor'])).toThrow(/reauth_required/);
+  });
+});
+
+describe('Row-Level Security (TESTING.md Bagian 4)', () => {
+  it('TC-RLS-01 — pengguna "Wilayah Timur saja" tidak menerima data Wilayah Barat dari respons API', () => {
+    const tenant = provisionTenant(harness);
+    const admin = contextFor(harness, tenant.tenantId, ['super_admin']);
+    const uploaded = new DatasetService(admin).upload({
+      filename: 'wilayah.csv',
+      content: Buffer.from(syntheticCsv({ rows: 30 })),
+    });
+
+    const restricted = contextFor(harness, tenant.tenantId, ['supervisor', 'business_analyst'], {
+      rls: [{ dimension: 'wilayah', operator: 'in', values: ['Wilayah Timur'] }],
+    });
+
+    const result = new DatasetService(restricted).rows(uploaded.dataset.id, { limit: 1000 });
+
+    expect(result.rows.length).toBeGreaterThan(0);
+    // Data di luar cakupan TIDAK PERNAH keluar dari respons — bukan sekadar disembunyikan.
+    expect(result.rows.every((row) => row.wilayah === 'Wilayah Timur')).toBe(true);
+    expect(result.rlsFiltered).toBeGreaterThan(0);
+  });
+
+  it('TC-RLS-02 — total yang dilaporkan juga sudah difilter, bukan hanya halaman yang tampil', () => {
+    const tenant = provisionTenant(harness);
+    const admin = contextFor(harness, tenant.tenantId, ['super_admin']);
+    const uploaded = new DatasetService(admin).upload({
+      filename: 'wilayah2.csv',
+      content: Buffer.from(syntheticCsv({ rows: 30 })),
+    });
+
+    const unrestrictedTotal = new DatasetService(admin).rows(uploaded.dataset.id, { limit: 5 }).total;
+    const restricted = contextFor(harness, tenant.tenantId, ['business_analyst'], {
+      rls: [{ dimension: 'wilayah', operator: 'in', values: ['Wilayah Timur'] }],
+    });
+    const restrictedTotal = new DatasetService(restricted).rows(uploaded.dataset.id, { limit: 5 }).total;
+
+    expect(restrictedTotal).toBeLessThan(unrestrictedTotal);
+  });
+
+  it('TC-RLS-03 — fail secure: baris tanpa kolom dimensi pembatas tidak lolos', () => {
+    const tenant = provisionTenant(harness);
+    const admin = contextFor(harness, tenant.tenantId, ['super_admin']);
+    const uploaded = new DatasetService(admin).upload({
+      filename: 'tanpa-dimensi.csv',
+      // Dataset ini TIDAK memiliki kolom `wilayah`.
+      content: Buffer.from('kanal,jumlah\nChat,10\nEmail,20'),
+    });
+
+    const restricted = contextFor(harness, tenant.tenantId, ['business_analyst'], {
+      rls: [{ dimension: 'wilayah', operator: 'in', values: ['Wilayah Timur'] }],
+    });
+
+    // Akses default DITOLAK, bukan diizinkan (SECURITY.md Bagian 2 — Fail Secure).
+    expect(new DatasetService(restricted).rows(uploaded.dataset.id).rows).toHaveLength(0);
+  });
+});
+
+describe('Log Aktivitas immutable (SECURITY.md Bagian 9)', () => {
+  it('TC-AUD-01 — entri log tidak dapat diperbarui, bahkan lewat SQL langsung', () => {
+    const tenant = provisionTenant(harness);
+    const entry = harness.audit.record({
+      tenantId: tenant.tenantId,
+      actorLabel: 'uji',
+      action: 'test.event',
+      module: 'Log Aktivitas',
+    });
+
+    expect(() =>
+      harness.db.prepare('UPDATE auditdb.audit_log SET action = ? WHERE id = ?').run('tampered', entry.id),
+    ).toThrow(/immutable/i);
+  });
+
+  it('TC-AUD-02 — entri log tidak dapat dihapus, termasuk oleh administrator basis data', () => {
+    const tenant = provisionTenant(harness);
+    const entry = harness.audit.record({
+      tenantId: tenant.tenantId,
+      actorLabel: 'uji',
+      action: 'test.event',
+      module: 'Log Aktivitas',
+    });
+
+    expect(() => harness.db.prepare('DELETE FROM auditdb.audit_log WHERE id = ?').run(entry.id)).toThrow(/immutable/i);
+  });
+
+  it('TC-AUD-03 — log tersimpan di basis data terpisah dari data operasional', () => {
+    const databases = harness.db.pragma('database_list') as Array<{ name: string; file: string }>;
+    const main = databases.find((d) => d.name === 'main')!;
+    const auditDb = databases.find((d) => d.name === 'auditdb')!;
+
+    expect(auditDb).toBeDefined();
+    expect(auditDb.file).not.toBe(main.file);
+  });
+
+  it('TC-AUD-04 — Auditor satu tenant tidak dapat membaca log tenant lain', () => {
+    const a = provisionTenant(harness, { slug: 'audita' });
+    const b = provisionTenant(harness, { slug: 'auditb' });
+
+    harness.audit.record({ tenantId: a.tenantId, actorLabel: 'a', action: 'x', module: 'M' });
+    harness.audit.record({ tenantId: b.tenantId, actorLabel: 'b', action: 'y', module: 'M' });
+
+    const seenByA = harness.audit.query(a.tenantId);
+    expect(seenByA.rows.every((row) => row.tenant_id === a.tenantId)).toBe(true);
+  });
+
+  it('TC-AUD-05 — usage_events bersifat append-only sebagai dasar tagihan yang dapat diaudit', () => {
+    const tenant = provisionTenant(harness);
+    const ctx = contextFor(harness, tenant.tenantId, ['super_admin']);
+    ctx.db.insert('usage_events', {
+      id: 'use_test',
+      metric: 'ai_calls_monthly',
+      quantity: 1,
+      occurred_at: new Date().toISOString(),
+      source: 'test',
+      meta_json: null,
+    });
+
+    expect(() => harness.db.prepare('UPDATE usage_events SET quantity = 999 WHERE id = ?').run('use_test')).toThrow(
+      /append-only/i,
+    );
+    expect(() => harness.db.prepare('DELETE FROM usage_events WHERE id = ?').run('use_test')).toThrow(/append-only/i);
+  });
+});
+
+/**
+ * Keacakan kriptografis pada nilai yang berkonsekuensi (SECURITY.md Bagian 4 & 17.2).
+ *
+ * `Math.random()` DAPAT DIPREDIKSI: keadaan xorshift128+ V8 dapat direkonstruksi dari
+ * beberapa keluaran. Uji di sini tidak dapat membuktikan sebuah nilai "acak", tetapi
+ * dapat menutup regresi yang nyata: bias, tabrakan, dan panjang yang salah — dan
+ * mencegah seseorang mengembalikan `Math.random()` tanpa ada yang menyadarinya.
+ */
+describe('Keacakan pada nilai sensitif', () => {
+  /**
+   * Kedua uji berikut sengaja mengundi ratusan kali, dan setiap undian menulis satu
+   * permintaan pemindahan ke basis data. Di mesin pengembangan keduanya selesai dalam
+   * ~1,5 s dan ~2 s, tetapi di runner CI dua inti seluruh berkas uji berbagi CPU
+   * (`tests 71s` untuk 26 s wall), sehingga batas bawaan 5 s sempat terlampaui.
+   *
+   * Batasnya dinaikkan, BUKAN jumlah undiannya dikurangi: 200 undian dengan ambang 195
+   * unik adalah kekuatan statistik uji ini. Menurunkannya menjadi beberapa puluh undian
+   * akan membuat generator yang bias halus lolos — menukar daya deteksi dengan waktu
+   * eksekusi. Uji lain tetap memakai batas 5 s agar hang sungguhan tetap tertangkap.
+   */
+  const BATAS_UNDIAN_BANYAK = 30_000;
+
+  it('TC-RNG-01 — OTP pemindahan perangkat selalu 6 digit dan tidak berulang', { timeout: BATAS_UNDIAN_BANYAK }, () => {
+    const tenant = provisionTenant(harness);
+    const userId = createUser(harness, tenant.tenantId, 'pindah@rng.test', 'business_analyst');
+
+    const otps = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const { otp } = harness.auth.requestDeviceTransfer({
+        tenantId: tenant.tenantId,
+        userId,
+        actorLabel: 'pindah@rng.test',
+        fingerprint: fingerprint({ canvasHash: `canvas-${i}` }),
+      });
+      expect(otp).toMatch(/^\d{6}$/);
+      otps.add(otp);
+    }
+
+    // 200 undian dari 900.000 kemungkinan: tabrakan sangat tidak mungkin. Ambang 195
+    // memberi ruang bagi tabrakan wajar sekaligus menangkap generator yang rusak
+    // (mis. selalu mengembalikan nilai sama, atau rentangnya jauh lebih kecil).
+    expect(otps.size).toBeGreaterThan(195);
+  });
+
+  it('TC-RNG-02 — OTP tidak pernah keluar dari rentang 6 digit (tanpa bias pembulatan)', { timeout: BATAS_UNDIAN_BANYAK }, () => {
+    const tenant = provisionTenant(harness);
+    const userId = createUser(harness, tenant.tenantId, 'rentang@rng.test', 'business_analyst');
+
+    for (let i = 0; i < 300; i++) {
+      const { otp } = harness.auth.requestDeviceTransfer({
+        tenantId: tenant.tenantId,
+        userId,
+        actorLabel: 'rentang@rng.test',
+        fingerprint: fingerprint({ canvasHash: `c-${i}` }),
+      });
+      const value = Number(otp);
+      expect(value).toBeGreaterThanOrEqual(100_000);
+      expect(value).toBeLessThanOrEqual(999_999);
+    }
+  });
+
+  it('TC-RNG-03 — newId() tidak menghasilkan tabrakan meski dipanggil dalam satu milidetik', () => {
+    // Bagian waktu dari ID identik dalam satu milidetik, jadi keunikannya bergantung
+    // sepenuhnya pada bagian acak — persis bagian yang dulu memakai Math.random().
+    const ids = new Set<string>();
+    for (let i = 0; i < 5_000; i++) ids.add(newId('tst'));
+    expect(ids.size).toBe(5_000);
+    expect([...ids].every((id) => id.startsWith('tst_'))).toBe(true);
+  });
+});
+
+/**
+ * Batas panjang masukan tidak tepercaya sebelum menyentuh regex (SECURITY.md Bagian 7).
+ *
+ * Di shared hosting CPU adalah kuota: satu permintaan yang memaksa penelusuran ulang
+ * polinomial dapat menghabiskan jatah seluruh situs. Batas ini membuat kasus terburuk
+ * menjadi konstan, terlepas dari bentuk regexnya.
+ */
+describe('Masukan tidak tepercaya dibatasi sebelum diproses', () => {
+  it('TC-DOS-01 — User-Agent raksasa tidak memperlambat hashing fingerprint', () => {
+    // Pola yang memicu penelusuran ulang pada /\d+(\.\d+)+/.
+    const hostile = fingerprint({ userAgent: `Mozilla/${'1.'.repeat(20_000)}x` });
+
+    const started = process.hrtime.bigint();
+    const hashed = hashComponents(hostile);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+    expect(hashed.userAgent).toHaveLength(64);
+    // Ambang longgar dengan sengaja: yang diuji adalah "tidak meledak", bukan tolok ukur.
+    expect(elapsedMs).toBeLessThan(250);
+  });
+
+  it('TC-DOS-02 — daftar font raksasa dipotong, bukan diproses seluruhnya', () => {
+    const many = fingerprint({ fonts: Array.from({ length: 50_000 }, (_, i) => `Font-${i}`) });
+    const started = process.hrtime.bigint();
+    expect(hashComponents(many).fonts).toHaveLength(64);
+    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(250);
+  });
+
+  it('TC-DOS-03 — pertanyaan raksasa tidak memperlambat parser intent', () => {
+    const hostile = `kenapa naik ${'a'.repeat(200_000)}`;
+    const started = process.hrtime.bigint();
+    const intent = parseIntent(hostile, ['jumlah_tiket'], ['wilayah']);
+    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(250);
+    expect(intent).toBeDefined();
+  });
+
+  it('TC-DOS-04 — formula raksasa DITOLAK, bukan dipotong diam-diam', () => {
+    // Memotong formula akan mengubah artinya; KPI yang salah hitung lebih buruk
+    // daripada KPI yang gagal dibuat dengan pesan jelas.
+    expect(() => tokenizeFormula('1+'.repeat(MAX_FORMULA_LENGTH))).toThrow(/formula_too_long|too_long/i);
+    // Formula wajar tetap diterima.
+    expect(tokenizeFormula('SUM(jumlah_tiket) / 2').length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Keadaan runtime yang harus DIBAGI antar-proses (DEPLOY-SHARED-HOSTING.md).
+ *
+ * Passenger di shared hosting menjalankan beberapa proses dan me-recycle saat idle.
+ * Batas laju yang disimpan di memori berarti batas "10 per menit" sesungguhnya
+ * 10 × jumlah proses, dan hilang setiap recycle — kontrol keamanan yang meluruh tanpa
+ * ada yang melihat, justru di platform yang menjadi target pemasangan.
+ */
+describe('Batas laju & idempotensi dibagi antar-proses', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    harness = createHarness();
+  });
+
+  afterEach(() => {
+    harness.cleanup();
+  });
+
+  it('TC-RL-01 — dua instance berbeda berbagi satu penghitung', () => {
+    // Dua instance mewakili dua proses Passenger yang melayani domain yang sama.
+    const prosesA = new RateLimiter(3, 60_000, harness.db);
+    const prosesB = new RateLimiter(3, 60_000, harness.db);
+
+    prosesA.check('login:203.0.113.9');
+    prosesB.check('login:203.0.113.9');
+    prosesA.check('login:203.0.113.9');
+
+    // Permintaan keempat ditolak SIAPA PUN yang menerimanya. Dengan penghitung di
+    // memori, prosesB baru akan menolak pada permintaan keempatnya sendiri — memberi
+    // penyerang 3 × jumlah proses percobaan.
+    expect(() => prosesB.check('login:203.0.113.9')).toThrow(RateLimitedError);
+    expect(() => prosesA.check('login:203.0.113.9')).toThrow(RateLimitedError);
+  });
+
+  it('TC-RL-02 — kunci berbeda tidak saling menghabiskan kuota', () => {
+    const limiter = new RateLimiter(2, 60_000, harness.db);
+    limiter.check('login:1.1.1.1');
+    limiter.check('login:1.1.1.1');
+    expect(() => limiter.check('login:1.1.1.1')).toThrow(RateLimitedError);
+    // IP lain harus tetap punya kuota penuh; kalau tidak, satu penyerang dapat
+    // memblokir seluruh pengguna lain.
+    expect(() => limiter.check('login:2.2.2.2')).not.toThrow();
+  });
+
+  it('TC-RL-03 — jendela geser: hit lama tidak lagi dihitung', () => {
+    const limiter = new RateLimiter(2, 60_000, harness.db);
+    limiter.check('login:3.3.3.3');
+    limiter.check('login:3.3.3.3');
+    expect(() => limiter.check('login:3.3.3.3')).toThrow(RateLimitedError);
+
+    // Menua-kan hit yang tercatat sama artinya dengan menunggu jendelanya lewat.
+    harness.db
+      .prepare('UPDATE rate_limit_hits SET hit_at_ms = hit_at_ms - ? WHERE bucket = ?')
+      .run(120_000, 'login:3.3.3.3');
+    expect(() => limiter.check('login:3.3.3.3')).not.toThrow();
+  });
+
+  it('TC-RL-04 — penghitung bertahan melewati recycle proses', () => {
+    const sebelumRecycle = new RateLimiter(2, 60_000, harness.db);
+    sebelumRecycle.check('login:4.4.4.4');
+    sebelumRecycle.check('login:4.4.4.4');
+
+    // Instance baru = proses baru setelah Passenger me-recycle yang idle. Batas yang
+    // hilang saat recycle akan membuat penguncian akun mudah diakali dengan menunggu.
+    const setelahRecycle = new RateLimiter(2, 60_000, harness.db);
+    expect(() => setelahRecycle.check('login:4.4.4.4')).toThrow(RateLimitedError);
+  });
+
+  it('TC-RL-05 — respons idempoten terlihat oleh proses lain', () => {
+    const prosesA = new IdempotencyStore(harness.db);
+    const prosesB = new IdempotencyStore(harness.db);
+
+    prosesA.set('t1:POST:/api/v1/alerts:key-9', 201, { id: 'alr_1' });
+
+    // Permintaan ulang yang mendarat di proses lain harus menerima respons yang SAMA,
+    // bukan menjalankan aksinya untuk kedua kali.
+    expect(prosesB.get('t1:POST:/api/v1/alerts:key-9')).toEqual({ status: 201, body: { id: 'alr_1' } });
+  });
+
+  it('TC-RL-06 — entri idempoten yang kedaluwarsa tidak dipakai lagi', () => {
+    const store = new IdempotencyStore(harness.db);
+    store.set('t1:POST:/x:key-old', 200, { ok: true });
+    harness.db
+      .prepare('UPDATE idempotency_entries SET created_at_ms = ? WHERE key = ?')
+      .run(Date.now() - 48 * 3600 * 1000, 't1:POST:/x:key-old');
+    expect(store.get('t1:POST:/x:key-old')).toBeUndefined();
+  });
+});
