@@ -212,14 +212,18 @@ Mengikuti DEPLOYMENT.md Bagian 10 (checklist pra-peluncuran R1) dan SECURITY.md:
 - [ ] **Kode pemulihan admin sudah dicetak/disimpan di luar sistem**
 - [ ] Backup `~/vantik-data/` masuk jadwal backup hosting
 - [ ] **Cron penjadwal terpasang** bila hosting mendukungnya (lihat 8.2) — tanpa itu,
-      notifikasi ambang batas hanya dievaluasi selama ada proses yang hidup, dan faktur
-      perpanjangan tertunda (blokir masa berlaku sendiri tetap berjalan — lihat 8.1d)
+      notifikasi ambang batas hanya dievaluasi selama ada proses yang hidup, faktur
+      perpanjangan tertunda, dan pesan yang gagal terkirim menunggu sampai ada orang membuka
+      aplikasi (blokir masa berlaku sendiri tetap berjalan — lihat 8.1d)
 - [ ] Jangka waktu berlangganan tenant sudah sesuai kontrak (lihat 8.1d) dan tanggal
       berakhirnya tercatat di luar sistem
 - [ ] Jendela pemangkasan tabel ditinjau bila pemakaian berat (lihat 8.4); pertumbuhan
       berkas audit dipahami tidak dapat dipangkas (lihat 9b)
-- [ ] Antrean notifikasi diperiksa (`GET /api/v1/notifications/outbox`) — selama belum ada
-      transport nyata, setiap pesan berstatus `queued` dan perlu disampaikan manual
+- [ ] Kredensial notifikasi diisi (lihat 8.3) — SMTP minimal, karena tanpanya OTP pemindahan
+      perangkat dan kode pemulihan kata sandi harus disampaikan manual oleh Admin
+- [ ] Setelah diisi: satu notifikasi uji berstatus `sent` di
+      `GET /api/v1/notifications/outbox`, dan kanal yang diharapkan muncul di
+      `GET /api/v1/system/notification-channels`
 
 ### 8.1 Aktifkan verifikasi dua langkah SEBELUM hal lain
 
@@ -275,11 +279,11 @@ Yang perlu diketahui operator:
   antrean notifikasi. Jawaban layar SAMA untuk alamat terdaftar dan tidak terdaftar —
   formulir yang membedakan keduanya adalah alat pemetaan gratis bagi penebak.
 
-> **Selama belum ada transport email (lihat 8.3), kode pemulihan menunggu di antrean.**
+> **Selama kredensial SMTP belum diisi (lihat 8.3), kode pemulihan menunggu di antrean.**
 > Admin membacanya dari `GET /api/v1/notifications/outbox` dan menyampaikannya lewat kanal
-> terpercaya. Begitu transport nyata dipasang, jalur yang sama berjalan otomatis tanpa
-> perubahan kode. Sampai saat itu, **sediakan dua akun Admin** — kalau tidak, Admin yang
-> lupa kata sandinya sendiri tidak punya siapa pun yang dapat membacakan kodenya.
+> terpercaya. Begitu SMTP diisi, jalur yang sama berjalan otomatis tanpa perubahan kode.
+> Sampai saat itu, **sediakan dua akun Admin** — kalau tidak, Admin yang lupa kata sandinya
+> sendiri tidak punya siapa pun yang dapat membacakan kodenya.
 
 ### 8.1c Pendaftaran mandiri: buka atau tutup
 
@@ -303,7 +307,7 @@ seseorang memutuskannya:
 
 1. Pendaftar menerima layar "menunggu persetujuan" — bukan tombol Masuk yang pasti gagal.
 2. Setiap pemegang peran **Platform Operator** menerima pemberitahuan di antrean
-   notifikasi (lihat 8.3 — tanpa transport nyata, pesannya menunggu di antrean).
+   notifikasi (lihat 8.3 — bila kanalnya belum diisi, pesannya menunggu di antrean).
 3. Operator membuka **Manajemen Tenant → Pendaftaran menunggu persetujuan**, lalu
    menyetujui atau menolak. Penolakan **wajib** menyertakan alasan, dan alasan itu
    dikirimkan ke pendaftar.
@@ -346,8 +350,8 @@ Dua hal yang perlu Anda ketahui sebagai operator:
    menghasilkan periode yang sudah lewat.
 
 Pengingat perpanjangan dikirim 7 hari sebelum berakhir, ke pemegang peran Super Admin
-saja. Pengiriman itu **melewati antrean notifikasi** — baca 8.3: tanpa transport nyata,
-pesannya menunggu di antrean dan tidak sampai ke email siapa pun.
+saja. Pengiriman itu **melewati antrean notifikasi** — baca 8.3: selama kanal email belum
+diisi, pesannya menunggu di antrean dan tidak sampai ke email siapa pun.
 
 ### 8.2 Penjadwal: pasang cron bila hosting mendukungnya
 
@@ -376,24 +380,131 @@ endpoint MENOLAK semua permintaan — terbuka tanpa sengaja bukan pilihan.
 Status pekerjaan dapat dibaca di `GET /api/v1/system/scheduler`: kapan terakhir berjalan,
 hasilnya, dan tenant mana yang gagal.
 
-### 8.3 Notifikasi belum benar-benar terkirim
+### 8.3 Notifikasi: isi kredensial agar benar-benar terkirim
 
 Ini perlu dibaca sebelum mengandalkan Alert Center atau pemulihan perangkat.
 
-Transport bawaan **mengantre tanpa mengirim**, dan menyatakannya apa adanya: status pesan
-tetap `queued`, bukan `delivered`. Konsekuensinya nyata:
+Transportnya **sudah terpasang** untuk tiga kanal — email (SMTP), WhatsApp, dan Telegram —
+tetapi **seluruh nilainya dibiarkan kosong**. Selama kosong, aplikasi berperilaku persis
+seperti sebelumnya: pesan **diantre tanpa dikirim**, dan status pesan tetap `queued`, bukan
+`delivered`. Itu disengaja — "tercatat terkirim" yang salah lebih berbahaya daripada
+kegagalan yang terlihat, terutama untuk OTP dan kode pemulihan kata sandi.
 
-- Notifikasi ambang batas tidak sampai ke email/WhatsApp penerima.
-- **OTP pemindahan perangkat** menunggu di antrean. Pengguna yang berganti perangkat tidak
-  akan menerima kodenya sampai ada transport nyata — sampai itu terpasang, Admin harus
-  membacanya dari antrean dan menyampaikannya lewat kanal terpercaya.
+Selama kanal belum diisi, dua hal berikut berlaku:
+
+- Notifikasi ambang batas tidak sampai ke penerima.
+- **OTP pemindahan perangkat** menunggu di antrean. Admin harus membacanya dari antrean dan
+  menyampaikannya lewat kanal terpercaya.
 
 Periksa antreannya di `GET /api/v1/notifications/outbox` (butuh izin `device:read`). Isi
 pesan sensitif seperti OTP **tidak** disertakan di daftar itu — membiarkannya terbaca akan
 membuat siapa pun dengan izin tersebut dapat menyelesaikan pemindahan perangkat orang lain.
 
-Untuk mengaktifkan pengiriman nyata, pasang implementasi `NotificationTransport`
-(`services/src/alerting-service/index.ts`) dan setel `delivers = true`.
+Kanal mana yang sudah hidup dapat dilihat di `GET /api/v1/system/notification-channels`.
+Endpoint itu menyebut **nama kanal saja** — tanpa host, pengirim, maupun token — supaya
+memeriksa konfigurasi tidak sama dengan membocorkannya.
+
+#### 8.3a Email (SMTP)
+
+Isi di `.env` atau di *Environment variables* panel hosting. Kanal email hanya menyala bila
+`VANTIK_SMTP_HOST` **dan** `VANTIK_SMTP_FROM` terisi:
+
+| Variabel | Wajib | Keterangan |
+|---|---|---|
+| `VANTIK_SMTP_HOST` | ya | Misal `mail.domainanda.id` — biasanya tertulis di cPanel → Email Accounts → Connect Devices |
+| `VANTIK_SMTP_PORT` | tidak | Bawaan `587`. Pakai `465` bila hosting hanya membuka TLS langsung |
+| `VANTIK_SMTP_USER` | tidak | Alamat email penuh; kosongkan hanya bila server benar-benar tanpa autentikasi |
+| `VANTIK_SMTP_PASSWORD` | tidak | Kata sandi akun email tersebut |
+| `VANTIK_SMTP_FROM` | ya | Alamat pengirim. Banyak server menolak `MAIL FROM` yang bukan miliknya |
+| `VANTIK_SMTP_IMPLICIT_TLS` | tidak | `true`/`false`. Bawaannya diturunkan dari port (465 → `true`) |
+| `VANTIK_SMTP_ALLOW_INSECURE_TLS` | tidak | Lihat peringatan di bawah |
+
+Dua hal yang perlu diketahui sebelum mengisinya:
+
+- **Tidak ada mode tanpa enkripsi.** Pada port 587, aplikasi meminta `STARTTLS`; bila server
+  tidak menawarkannya, pengiriman **dibatalkan** dengan alasan `server_without_starttls`
+  alih-alih meneruskan kata sandi dan kode pemulihan dalam bentuk polos.
+- **`VANTIK_SMTP_ALLOW_INSECURE_TLS=true` hanya untuk sertifikat mail yang tidak cocok dengan
+  nama host** — keadaan yang memang ada di sebagian shared hosting. Menyalakannya berarti
+  menerima bahwa lalu lintasnya dapat disadap pihak yang mampu menyisipkan diri, termasuk isi
+  OTP yang lewat di sana. Bawaannya mati; biarkan mati bila pengiriman sudah berhasil.
+
+#### 8.3b WhatsApp
+
+Berbentuk **template**, bukan bentuk milik satu penyedia — karena "API WhatsApp" bukan satu
+hal: WhatsApp Cloud API milik Meta, Fonnte, Wablas, dan Twilio berbeda bentuk badannya.
+Kanal ini menyala bila `VANTIK_WHATSAPP_URL` terisi:
+
+| Variabel | Wajib | Keterangan |
+|---|---|---|
+| `VANTIK_WHATSAPP_URL` | ya | Endpoint kirim pesan milik penyedia Anda |
+| `VANTIK_WHATSAPP_TOKEN` | tidak | Bila diisi, dikirim sebagai `Authorization: Bearer <token>` |
+| `VANTIK_WHATSAPP_METHOD` | tidak | Bawaan `POST` |
+| `VANTIK_WHATSAPP_HEADERS` | tidak | Objek JSON satu baris untuk header non-standar |
+| `VANTIK_WHATSAPP_BODY_TEMPLATE` | tidak | Bawaannya bentuk WhatsApp Cloud API |
+
+Placeholder yang tersedia di template: `{{recipient}}`, `{{subject}}`, `{{body}}`. Ketiganya
+disisipkan sebagai string JSON yang **sudah di-escape**, jadi tanda kutip atau baris baru di
+dalam pesan tidak merusak badan permintaan. Contoh untuk penyedia lokal bergaya sederhana:
+
+```
+VANTIK_WHATSAPP_BODY_TEMPLATE={"target":"{{recipient}}","message":"{{subject}}\n{{body}}"}
+```
+
+Nomor penerima mengikuti format yang diminta penyedia (umumnya `62…`, tanpa `+` dan tanpa
+`0` di depan). Yang dikirim aplikasi adalah nomor yang tersimpan di profil pengguna apa
+adanya — bila penyedia menolaknya, perbaiki di profil, bukan di template.
+
+#### 8.3c Telegram
+
+| Variabel | Wajib | Keterangan |
+|---|---|---|
+| `VANTIK_TELEGRAM_BOT_TOKEN` | ya | Token dari [@BotFather](https://t.me/BotFather) |
+| `VANTIK_TELEGRAM_API_BASE` | tidak | Bawaan `https://api.telegram.org` |
+
+Penerima Telegram adalah **chat id**, bukan nomor telepon atau username. Pengguna harus
+menekan *Start* pada bot lebih dulu — Telegram tidak mengizinkan bot memulai percakapan.
+
+#### 8.3d Setelah diisi: bagaimana antrean terkuras
+
+Setelah mengisi salah satu kanal, **restart aplikasi** (Setup Node.js App → Restart);
+konfigurasi dibaca sekali saat proses menyala.
+
+Pengiriman berjalan di dua tempat, dan keduanya perlu diketahui:
+
+1. **Segera saat pesan dibuat.** Begitu ada pesan masuk antrean, pengiriman dimulai tanpa
+   menunggu apa pun — OTP pemindahan perangkat hanya berguna dalam hitungan menit. Ini
+   berjalan setelah respons dikirim, jadi pengguna tidak menunggu percakapan SMTP selesai.
+2. **Sapuan berkala `notification.dispatch`.** Passenger mematikan proses yang idle, sehingga
+   pengiriman di langkah 1 dapat mati di tengah jalan. Sapuan inilah yang membuat pesan yang
+   tertinggal akhirnya tetap terkirim — dan di situs yang sepi, sapuan itu hanya jalan bila
+   **cron penjadwal terpasang** (lihat 8.2). Tanpa cron, pesan yang tertinggal menunggu
+   sampai ada orang membuka aplikasi.
+
+Antrean lama ikut terkirim: pesan yang menumpuk selama kredensial belum diisi tidak hilang,
+ia dikirim pada sapuan pertama setelah restart.
+
+Yang terjadi bila pengiriman gagal:
+
+- Pesan **tetap `queued`** dan dicoba lagi, sampai **5 percobaan**. Gangguan sesaat pada
+  server email tidak dianggap permanen pada kegagalan pertama.
+- Setelah percobaan kelima, statusnya menjadi `failed` dengan alasan terakhir tercatat.
+  Berhenti mencoba itu disengaja: setiap percobaan pada alamat yang memang salah membayar
+  timeout 15 detik dan memperlambat pesan lain yang masih dapat terkirim.
+- Kanal yang **belum** dikonfigurasi (misal Teams atau Slack bila Anda hanya mengisi SMTP)
+  **dilewati** — tetap `queued`, percobaannya tidak terpakai, dan isinya tetap dapat dibaca
+  operator untuk disampaikan manual. Itu bukan kegagalan; itu "belum ada tujuannya".
+
+Periksa hasilnya di `GET /api/v1/notifications/outbox`: `sent` berarti benar-benar terkirim,
+`failed` disertai alasan singkat (misal `smtp_535`, `econnrefused`, `whatsapp_http_401`).
+Alasannya sengaja hanya berupa kode — bukan pesan penuh — karena pesan kesalahan sering
+memuat URL berikut tokennya, dan kolom ini dapat dibaca operator.
+
+Satu hal yang berubah setelah pengiriman aktif: **isi pesan sensitif (OTP dan kode pemulihan)
+dihapus dari antrean begitu benar-benar terkirim.** Sebelum ada transport, isi itu satu-satunya
+salinan yang dapat dibacakan Admin; setelah sampai ke penerimanya, ia berhenti menjadi jalan
+pemulihan dan tinggal menjadi rahasia yang mengendap di basis data. Pengguna yang tidak
+menerima emailnya cukup meminta kode baru.
 
 ---
 

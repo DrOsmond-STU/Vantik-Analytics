@@ -344,7 +344,12 @@ export async function seed(): Promise<void> {
     comparator: 'lte',
     threshold: 4.0,
     channels: ['email', 'slack'],
-    recipients: ['sari@demo.vantik.id', '#layanan-pelanggan'],
+    // Sebuah aturan mengirim ke SETIAP kanal × SETIAP penerima. Menyertakan nama kanal
+    // Slack di sini akan menghasilkan kombinasi "email ke #layanan-pelanggan" yang mustahil
+    // terkirim, lalu mengendap sebagai baris merah di antrean data contoh — operator yang
+    // baru memasang SMTP akan menyimpulkan konfigurasinya gagal, padahal data contohnya
+    // yang tidak masuk akal.
+    recipients: ['sari@demo.vantik.id'],
     cooldownMinutes: 120,
   });
   alerts.createRule({

@@ -70,6 +70,20 @@ export interface NotificationTransport {
    */
   readonly delivers: boolean;
 
+  /**
+   * Apakah kanal INI dapat dikirim?
+   *
+   * `delivers` menjawab pertanyaan itu untuk seluruh transport sekaligus, dan itu tidak
+   * cukup begitu kanalnya dikonfigurasi satu per satu: operator yang mengisi SMTP saja
+   * membuat `delivers` bernilai true, sementara Teams dan Slack tetap tidak punya tujuan.
+   * Tanpa pemeriksaan per kanal, pesan Teams akan dicoba empat kali lalu dicatat `failed`
+   * dan isinya tidak disimpan ke antrean — operator kehilangan pesan yang sebelumnya masih
+   * dapat dibaca dan disampaikan manual.
+   *
+   * Opsional: transport yang memang seragam untuk semua kanal tidak perlu mengisinya.
+   */
+  canDeliver?(channel: Channel): boolean;
+
   send(input: {
     channel: Channel;
     recipient: string;
@@ -311,16 +325,20 @@ export class AlertService {
     // Nada tulisan: kesalahan/penyimpangan DIJELASKAN, bukan dramatis (BRAND.md 2).
     const body = `${observation.label}: ${observation.value} (ambang batas ${rule.threshold}).`;
 
-    // Tanpa transport nyata, statusnya tetap `queued` — bukan `delivered` (bohong) dan
-    // bukan `failed` (juga bohong: tidak ada yang gagal, memang tidak ada pengirim).
-    // Percobaan ulang berbackoff pun dilewati: mengulang stub empat kali dengan jeda
-    // 42 detik hanya memperlambat evaluasi aturan tanpa peluang berhasil.
-    if (!this.transport.delivers) {
+    // Tanpa tujuan untuk kanal ini, statusnya tetap `queued` — bukan `delivered` (bohong)
+    // dan bukan `failed` (juga bohong: tidak ada yang gagal, memang tidak ada pengirim).
+    // Percobaan ulang berbackoff pun dilewati: mengulang empat kali dengan jeda 42 detik
+    // ke tujuan yang tidak ada hanya memperlambat evaluasi aturan tanpa peluang berhasil.
+    const routed = this.transport.canDeliver?.(channel) ?? this.transport.delivers;
+    if (!routed) {
       await this.transport.send({ channel, recipient, subject, body });
       this.ctx.db.update(
         'alert_deliveries',
         { id: deliveryId },
-        { outcome: 'queued', failure_reason: 'no_transport_configured' },
+        {
+          outcome: 'queued',
+          failure_reason: this.transport.delivers ? 'channel_not_configured' : 'no_transport_configured',
+        },
       );
       // Isinya disimpan di outbox supaya operator dapat membacanya dan menyampaikan
       // sendiri. Tanpa ini, `GET /notifications/outbox` melaporkan antrean kosong
