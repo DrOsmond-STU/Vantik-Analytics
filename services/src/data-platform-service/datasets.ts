@@ -10,13 +10,13 @@ import type { RequestContext } from '../platform/context.ts';
 import type { WhereClause } from '../platform/tenancy.ts';
 import type { MeteringService } from '../metering-service/index.ts';
 import {
-  assertXlsxSupported,
   MAX_UPLOAD_BYTES,
   parseCsv,
   scanForMalware,
   validateFilename,
   type DetectedColumn,
 } from './csv.ts';
+import { xlsxToCsv } from './xlsx.ts';
 import { assessQuality, CERTIFICATION_THRESHOLD, type DatasetRow, type QualityReport } from './dataQuality.ts';
 
 export type DataClassification = 'public' | 'internal' | 'confidential' | 'restricted';
@@ -169,9 +169,17 @@ export class DatasetService {
     // Kuota dataset (PRD 6.29).
     this.metering?.assertWithinQuota('datasets', 1);
 
-    if (nameCheck.extension === '.xlsx') assertXlsxSupported(input.content);
+    /**
+     * XLSX dibaca lalu dialirkan lewat jalur CSV yang sama.
+     *
+     * Sengaja tidak punya jalur pembentukan dataset sendiri: deteksi tipe kolom, penanganan
+     * sel kosong, dan batas jumlah baris sudah teruji di jalur CSV. Dua jalur berarti dua
+     * tempat yang harus sepakat — dan diam-diam menyimpang.
+     */
+    const text =
+      nameCheck.extension === '.xlsx' ? xlsxToCsv(input.content) : input.content.toString('utf8');
 
-    const parsed = parseCsv(input.content.toString('utf8'));
+    const parsed = parseCsv(text);
     const quality = assessQuality(parsed.rows as DatasetRow[], parsed.columns);
 
     const at = nowIso();

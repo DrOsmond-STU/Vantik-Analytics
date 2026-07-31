@@ -257,16 +257,3 @@ export function parseCsv(content: string, options: ParseOptions = {}): ParsedDat
   return { columns, rows, rowCount: rows.length };
 }
 
-/**
- * XLSX minimal: berkas XLSX adalah arsip ZIP. Tanpa dependensi pihak ketiga, unggahan
- * XLSX diterima dan divalidasi bentuknya, namun ekstraksi isi memerlukan pustaka
- * spreadsheet. Alih-alih diam-diam menghasilkan dataset kosong, jalur ini menolak
- * dengan alasan yang jelas dan dapat ditelusuri (PRD 6.11).
- */
-export function assertXlsxSupported(buffer: Buffer): never {
-  const isZip = buffer[0] === 0x50 && buffer[1] === 0x4b;
-  throw new ValidationError(
-    isZip ? 'error.xlsx_conversion_required' : 'error.upload_corrupt_file',
-    { hint: 'convert_to_csv' },
-  );
-}
