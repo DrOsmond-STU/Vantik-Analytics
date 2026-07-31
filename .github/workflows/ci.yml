@@ -67,7 +67,19 @@ jobs:
   sast:
     name: SAST
     runs-on: ubuntu-latest
+    # Blok `permissions` pada level job MENGGANTI blok level workflow, bukan menambahinya.
+    #
+    # Sebelumnya hanya `security-events: write` yang tercantum, sehingga `contents: read`
+    # dari level workflow ikut hilang: `actions/checkout` menjawab "Repository not found",
+    # CodeQL tidak pernah berjalan, dan job-nya gagal pada langkah checkout. Gerbang SAST
+    # tampak menyala di daftar check sambil tidak pernah memindai satu baris pun —
+    # bentuk kegagalan yang paling buruk untuk sebuah gerbang keamanan.
+    #
+    # `actions: read` dibutuhkan CodeQL pada repositori privat untuk membaca informasi
+    # workflow run.
     permissions:
+      contents: read
+      actions: read
       security-events: write
     steps:
       - uses: actions/checkout@v4
