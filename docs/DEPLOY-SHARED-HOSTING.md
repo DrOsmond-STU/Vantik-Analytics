@@ -965,7 +965,9 @@ Bersikap jujur di muka lebih baik daripada Anda menemukannya saat sudah dipakai:
 | Batas CPU bersama | Forecast/regresi pada dataset besar lebih lambat | Jalankan pada jam senggang, atau pindah ke VPS. |
 | Tanpa cron sub-menit | Penjadwalan laporan & sinkronisasi bergantung cron cPanel (minimum 1 menit) | Cukup untuk kebutuhan harian/jam. |
 | SQLite, bukan basis data server | Penulisan bersamaan bertumpu pada satu berkas | Memadai untuk puluhan pengguna aktif. Untuk ratusan pengguna, pindah ke VPS. |
-| Tanpa MQTT | Digital Twin menerima data sensor lewat REST, bukan MQTT | Kirim pembacaan sensor ke `POST /api/v1/twin/readings`. |
+| Klien MQTT tidak dapat hidup di dalam aplikasi | Proses di-recycle saat idle; koneksi MQTT yang harus hidup terus akan mati bersamanya dan **diam-diam berhenti menerima data sensor** | Jalankan jembatan sebagai proses terpisah di mesin yang selalu menyala — lihat §8.6 dan `infra/mqtt-bridge/`. |
+| Koneksi Oracle | Membutuhkan Oracle Instant Client (pustaka native) yang tidak dapat dipasang tanpa akses root | Uji koneksi menjawab **"driver tidak tersedia"**, bukan berpura-pura berhasil. Ekspor ke CSV/XLSX, atau taruh REST endpoint di depan basis datanya. |
+| SSO SAML | Menuntut penanganan XML beserta kanonikalisasi tanda tangannya; pustaka yang benar terlalu besar untuk dipasang tanpa kompilasi, dan yang buatan sendiri hampir selalu salah tanpa terlihat | Pakai jalur **OIDC** (§8.5). Entra ID, Okta, Keycloak, dan Google Workspace berbicara keduanya. |
 
 **Kesimpulan jujur:** shared hosting cocok untuk pilot, satu divisi, atau organisasi
 kecil-menengah dengan pemakaian internal. Untuk beban penuh yang dibayangkan PRD

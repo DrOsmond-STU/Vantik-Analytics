@@ -45,7 +45,7 @@ dilakukan — perilaku yang disengaja (SECURITY.md Bagian 4), bukan kerusakan.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 647 test (600 backend + 47 komponen web)
+npm test              # 709 test (662 backend + 47 komponen web)
 npm run test:coverage # backend dengan ambang cakupan
 npm run test:web      # hanya uji komponen/DOM web app
 ```
@@ -116,6 +116,7 @@ vantik-analytics/
 │   └── SAST-TRIAGE.md            # temuan CodeQL yang tidak diperbaiki + alasannya
 └── infra/
     ├── shared-hosting/           # .htaccess, contoh .env produksi
+    ├── mqtt-bridge/              # jembatan MQTT → REST; proses TERPISAH, tanpa dependensi
     ├── Dockerfile
     └── k8s/                      # baru network policy; Deployment/Service belum ada
 ```
@@ -134,8 +135,8 @@ berbeda-beda dan dinyatakan jujur di bawah — mengikuti prioritas rilis PRD Bag
 | 3. Analitik Cerdas (AI) | AI Analytics, Forecast Analytics, RCA, Data Discovery, AI Narrative Report | Fungsional dengan penyedia **deterministik** bawaan; antarmuka `LlmProvider` siap dipasangi LLM eksternal/self-hosted |
 | 4. Analisis Statistik | Statistik Deskriptif, Uji Hipotesis, Regresi & Korelasi | Fungsional penuh, terverifikasi terhadap nilai rujukan |
 | 5. Manajemen Data | Dataset, Koneksi Eksternal, Data Modeling, Data Quality Center, KPI Center | Fungsional penuh |
-| 6. Monitoring | Alert Center, Digital Twin | Fungsional dengan **penjadwal**: ambang batas KPI disapu berkala, bukan hanya saat ada panggilan API. Pengiriman kanal lewat `NotificationTransport`, ingest sensor lewat HTTP (MQTT belum) |
-| 7. Administrasi Sistem | Master Pegawai, Otorisasi User, Log Aktivitas, Perangkat & Sesi | Fungsional penuh |
+| 6. Monitoring | Alert Center, Digital Twin | Fungsional dengan **penjadwal**: ambang batas KPI disapu berkala, bukan hanya saat ada panggilan API. Pengiriman kanal lewat `NotificationTransport`; ingest sensor lewat HTTP, dan **MQTT lewat jembatan proses terpisah** (`infra/mqtt-bridge/`) — lihat alasannya di bawah |
+| 7. Administrasi Sistem | Master Pegawai, Otorisasi User, Log Aktivitas, Perangkat & Sesi | Fungsional penuh; masuk lewat **SSO OpenID Connect** tersedia dan mati secara bawaan (SAML tidak didukung — lihat di bawah) |
 | 8. Langganan & Billing | Manajemen Tenant, Langganan & Paket, Billing & Faktur, Usage Metering & Kuota | Fungsional; jangka waktu 1/3/6/12 bulan, **penghentian otomatis saat masa berlaku habis** (dihitung dari tanggal pada tiap permintaan, tidak menunggu penjadwal), *payment gateway* lewat webhook terverifikasi tanda tangan |
 
 ### Sudah ada, tinggal diisi kredensialnya
@@ -152,13 +153,50 @@ supaya operator mengisinya sendiri tanpa menyunting satu baris kode pun.
   (`services/src/billing-service/gateway.ts`), menghadirkan QRIS, virtual account, dan
   e-wallet lewat halaman penyedia. Selama kosong, pembayaran dicatat operator platform.
   Lihat panduan §8.1g.
+- **Masuk lewat SSO (OpenID Connect)** — `services/src/identity-service/oidc.ts`. Selama
+  `VANTIK_OIDC_*` kosong, tombolnya **tidak digambar sama sekali**; tombol yang pasti gagal
+  lebih buruk daripada tidak ada tombol. Akun tidak dibuat otomatis, dan gerbang lain
+  (ruang kerja belum disetujui, akun nonaktif, ikatan perangkat, sesi tunggal, kewajiban
+  MFA per peran) berlaku sama persis. Lihat panduan §8.5.
+- **Ingest sensor MQTT** — jembatan di `infra/mqtt-bridge/`, memakai token ingest per-tenant
+  yang diterbitkan dari aplikasi. Lihat panduan §8.6.
 
-### Yang sengaja belum diimplementasikan
+### Yang TIDAK didukung, beserta alasannya
 
-Dinyatakan terbuka, bukan disembunyikan:
+Ini bukan daftar pekerjaan yang tertunda. Ketiganya adalah keputusan, dan alasannya
+dinyatakan supaya dapat dibantah — bukan disembunyikan di balik "belum".
 
-- **SSO SAML/OIDC** — skema & kolom `auth_provider` sudah ada; alur federasi belum. (MFA berbasis TOTP **sudah** ada — lihat tabel kontrol keamanan.)
-- **Ingest MQTT** — Digital Twin menerima pembacaan sensor lewat REST; gateway MQTT belum.
+- **SAML.** Tidak didukung dan tidak direncanakan. SAML menuntut penanganan XML beserta
+  kanonikalisasi tanda tangannya; pustaka yang melakukannya dengan benar terlalu besar
+  untuk dipasang tanpa kompilasi di shared hosting, dan yang menuliskannya sendiri hampir
+  selalu salah dengan cara yang tidak terlihat sampai ada yang memalsukan assertion.
+  **Jalan keluarnya sudah ada**: penyedia SAML yang juga berbicara OIDC — Entra ID, Okta,
+  Keycloak, Google Workspace — dipakai lewat jalur OIDC di atas.
+
+- **Koneksi Oracle.** Membutuhkan Oracle Instant Client, pustaka native yang tidak dapat
+  dipasang di shared hosting. Uji koneksi Oracle karena itu menjawab **"driver tidak
+  tersedia"** alih-alih berpura-pura berhasil (`services/src/data-platform-service/drivers.ts`).
+  Jalan keluarnya: ekspor ke CSV/XLSX, atau taruh REST endpoint di depan basis datanya.
+
+- **Klien MQTT di dalam aplikasi.** Tidak mungkin, bukan belum dikerjakan. Passenger
+  mematikan proses yang idle; koneksi MQTT harus hidup terus. Klien di dalam aplikasi akan
+  mati bersama prosesnya dan **diam-diam berhenti menerima data sensor** — aplikasi tampak
+  normal, grafik berhenti bertambah, tidak ada pesan kesalahan di mana pun. Yang tersedia
+  adalah **jembatan sebagai proses terpisah** (`infra/mqtt-bridge/`), dijalankan di mesin
+  yang memang selalu menyala.
+
+### Kedalaman yang dinyatakan apa adanya
+
+Bukan batas keras seperti di atas, tetapi perlu diketahui sebelum menaruh harapan:
+
+- **Dashboard & Report Designer** memakai penataan widget berbasis daftar, bukan
+  *drag-and-drop* di atas kanvas.
+- **Analitik cerdas** memakai penyedia deterministik bawaan. Antarmuka `LlmProvider` siap
+  dipasangi LLM eksternal atau self-hosted; tanpa itu, platform tetap berfungsi penuh.
+- **Ekspor PDF** memakai font bawaan PDF, yang hanya mengenal Latin-1. Aksara di luar itu
+  (mis. Jepang, Arab) dibuang, bukan dijadikan karakter acak yang tampak seperti berkas
+  rusak.
+- **Grafik di dalam PDF** digambar sebagai kotak berlabel, bukan gambar grafiknya.
 
 ### Pertanyaan terbuka yang memengaruhi implementasi
 
@@ -240,6 +278,10 @@ pelanggaran baru di masa depan.
 | `tests/payment-settlement.test.ts` | Wewenang menyatakan faktur dibayar: permintaan perpanjangan hanya **menerbitkan faktur** tanpa memajukan masa berlaku, Super Admin tenant **tidak dapat** mencatat pembayarannya sendiri meski memegang `*:*`, nomor referensi wajib, satu faktur hanya dapat dicatat sekali, dan webhook ditolak selama rahasianya belum dikonfigurasi |
 | `tests/trial-disabled.test.ts` | Uji coba gratis mati secara bawaan: ruang kerja baru dapat dibaca tetapi tidak dapat menulis, blokirnya berlaku sejak permintaan pertama tanpa menunggu penjadwal, pesannya berbunyi **belum aktif** alih-alih kedaluwarsa, dan langganan yang sudah berjalan tidak ikut terkunci |
 | `tests/subscription-lifecycle.test.ts` | Siklus 1/3/6/12 bulan, invarian harga katalog↔kalkulator, penjepitan tanggal akhir bulan, dan penghentian otomatis saat masa berlaku habis — termasuk bahwa blokirnya **tidak menunggu penjadwal** dan bahwa perpanjangan tetap dapat dilakukan saat ruang kerja terkunci |
+| `tests/oidc.test.ts` | Verifikasi ID token dengan tanda tangan RSA **sungguhan** yang dibuat di tempat: `alg: none` ditolak, penurunan ke HMAC dengan kunci publik sebagai rahasia ditolak, token milik aplikasi lain di penyedia yang sama ditolak, nonce sesi lain ditolak, dan email yang belum terverifikasi ditolak |
+| `tests/oidc-flow.test.ts` | Pemasangan SSO ke aplikasi: `state` sekali pakai, tujuan setelah masuk hanya lintasan relatif (open redirect), akun **tidak** dibuat otomatis, ruang kerja belum disetujui dan akun nonaktif tetap tertahan, kata sandi lokal tidak tersentuh, dan alasan teknis penolakan token tidak dikembalikan ke pemanggil |
+| `tests/ingest.test.ts` | Token jembatan MQTT: nilainya tidak pernah dapat dibaca ulang, pencabutan berlaku seketika, pemegangnya **hanya** dapat mengirim pembacaan (tidak membaca dasbor, tidak melihat aset), tidak dapat menulis ke tenant lain, ruang kerja baca-saja tetap tertutup — dan pengguna biasa tidak lagi dapat menyuntik pembacaan sensor |
+| `tests/mqtt-bridge.test.ts` | Protokol MQTT 3.1.1 dan pemetaan topik: panjang sisa pada nilai batas 127/128/16.383, beberapa paket dalam satu chunk dan satu paket terbelah, PUBACK QoS 1, joker per tingkat, tiga bentuk muatan yang benar-benar ditemui, dan muatan kosong yang **tidak** dibaca sebagai nol |
 
 Uji komponen/DOM web app berada di `frontend/web-app/tests/` (proyek vitest tersendiri,
 karena butuh jsdom sedangkan tsconfig `services/` sengaja tanpa `lib: DOM`):
