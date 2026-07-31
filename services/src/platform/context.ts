@@ -177,6 +177,14 @@ export class RequestContext {
    * perubahan yang dihentikan sampai langganan dipulihkan.
    */
   requireWritable(): void {
+    if (this.flags.readOnlyReason === 'subscription_unpaid') {
+      // Ruang kerja baru yang belum pernah dibayar. Pesannya harus mengarahkan ke
+      // AKTIVASI, bukan ke perpanjangan sesuatu yang belum pernah berjalan.
+      throw new ForbiddenError('error.subscription_unpaid', {
+        recoveryKey: 'recovery.activate_subscription',
+        status: this.tenant.status,
+      });
+    }
     if (this.flags.readOnlyReason === 'subscription_expired') {
       throw new ForbiddenError('error.subscription_expired', {
         recoveryKey: 'recovery.renew_subscription',
@@ -236,6 +244,18 @@ export interface SubscriptionPeriodRow {
   status: string;
   trial_ends_at: string | null;
   current_period_end: string;
+  /** NULL = belum pernah dibayar. Lihat migrasi `0015_paid_activation`. */
+  activated_at?: string | null;
+}
+
+/**
+ * Benar bila langganan ini belum pernah benar-benar dibayar.
+ *
+ * Uji coba TIDAK termasuk: ia memang belum dibayar, tetapi masa pakainya sah dan pesannya
+ * harus berbunyi "uji coba berakhir", bukan "belum aktif".
+ */
+export function subscriptionNeverActivated(sub: SubscriptionPeriodRow): boolean {
+  return sub.status !== 'trialing' && (sub.activated_at ?? null) === null;
 }
 
 /**
@@ -272,7 +292,7 @@ export function subscriptionLapsed(sub: SubscriptionPeriodRow, at: number = Date
 export function loadFeatureFlags(db: Db, tenantId: string, tenantStatus: string): FeatureFlags {
   const sub = db
     .prepare(
-      `SELECT plan_code, status, trial_ends_at, current_period_end FROM subscriptions
+      `SELECT plan_code, status, trial_ends_at, current_period_end, activated_at FROM subscriptions
         WHERE tenant_id = ? AND status IN ('trialing','active','past_due')
         ORDER BY created_at DESC LIMIT 1`,
     )
@@ -282,13 +302,23 @@ export function loadFeatureFlags(db: Db, tenantId: string, tenantStatus: string)
   const plan: PlanDefinition = PLAN_BY_CODE.get(planCode) ?? PLAN_BY_CODE.get('starter')!;
   const lapsed = sub !== undefined && subscriptionLapsed(sub);
   const blockedByStatus = tenantStatus === 'read_only' || tenantStatus === 'past_due';
+  // Belum pernah aktif dibedakan dari kedaluwarsa: keduanya memblokir penulisan, tetapi
+  // "masa berlaku habis" kepada pelanggan yang belum pernah punya masa berlaku adalah
+  // pesan yang menyesatkan — ia akan mencari riwayat yang tidak ada.
+  const unpaid = lapsed && sub !== undefined && subscriptionNeverActivated(sub);
   return new FeatureFlags(
     plan,
     {},
     lapsed || blockedByStatus,
-    // Masa berlaku habis disebut lebih dulu: itu sebab yang dapat diselesaikan sendiri
-    // oleh pelanggan, dan status tenant `past_due` biasanya hanyalah akibatnya.
-    lapsed ? 'subscription_expired' : blockedByStatus ? 'tenant_status' : null,
+    // Sebab yang dapat diselesaikan sendiri oleh pelanggan disebut lebih dulu; status
+    // tenant `past_due` biasanya hanyalah akibatnya.
+    unpaid
+      ? 'subscription_unpaid'
+      : lapsed
+        ? 'subscription_expired'
+        : blockedByStatus
+          ? 'tenant_status'
+          : null,
     sub ? subscriptionExpiresAt(sub) : null,
   );
 }

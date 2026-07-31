@@ -235,6 +235,10 @@ export const STANDARD_ROLES: readonly StandardRole[] = [
       'device:approve_transfer',
       'tenant:read',
       'tenant:configure',
+      // Kredensial jembatan MQTT: menerbitkan dan mencabutnya adalah pekerjaan
+      // administrasi sistem, bukan pekerjaan orang yang membaca dasbor.
+      'twin:ingest',
+      'twin:ingest_manage',
     ],
     // Tidak dapat mengubah hak akses (itu kewenangan Super Admin) — SECURITY.md Bagian 5.
     denials: ['authorization:write'],
@@ -254,8 +258,17 @@ export const STANDARD_ROLES: readonly StandardRole[] = [
       'subscription:write',
       'usage:read',
     ],
-    // Log Aktivitas immutable bahkan bagi Super Admin (SECURITY.md Bagian 9).
-    denials: ['audit:write', 'audit:delete'],
+    /**
+     * Log Aktivitas immutable bahkan bagi Super Admin (SECURITY.md Bagian 9).
+     *
+     * `billing:settle` juga ditolak, dan itu bukan pengetatan kecil: `*:*` di atas akan
+     * memberikannya, dan tanpa penolakan ini pemilik ruang kerja dapat menyatakan
+     * fakturnya sendiri lunas lalu memperpanjang masa berlakunya tanpa uang yang pernah
+     * masuk. Wewenang menyatakan pembayaran ada di sisi platform — pihak yang berutang
+     * tidak boleh menjadi pihak yang menyatakan utangnya lunas. Penolakan mengalahkan
+     * pemberian, jadi pemisahan ini tidak dapat dilanggar tanpa menyunting berkas ini.
+     */
+    denials: ['audit:write', 'audit:delete', 'billing:settle'],
     mfaRequired: true,
   },
   {
@@ -279,6 +292,15 @@ export const STANDARD_ROLES: readonly StandardRole[] = [
       'tenant:read',
       'subscription:read',
       'billing:read',
+      /**
+       * Menyatakan sebuah faktur benar-benar DIBAYAR.
+       *
+       * Dipegang sisi platform, dan SENGAJA ditolak untuk Super Admin tenant: pihak yang
+       * berutang tidak boleh menjadi pihak yang menyatakan utangnya lunas. Tanpa pemisahan
+       * itu, pemegang `subscription:write` dapat memperpanjang ruang kerjanya sendiri tanpa
+       * uang yang pernah masuk — dan tidak ada satu pun kesalahan yang tercatat.
+       */
+      'billing:settle',
       'platform:health',
     ],
     denials: [

@@ -4,6 +4,7 @@
  * Zero Trust (SECURITY.md Bagian 2): setiap koneksi ke sumber data eksternal
  * diperlakukan tidak tepercaya sampai diverifikasi dan dienkripsi.
  */
+import { probeConnection, runQuery } from './drivers.ts';
 import { newId, nowIso } from '../platform/db.ts';
 import { ConflictError, NotFoundError, ValidationError } from '../platform/errors.ts';
 import { open, seal, type KeyRing } from '../platform/crypto.ts';
@@ -83,6 +84,16 @@ export interface ConnectionProbe {
  * atau pesan kesalahan yang memuat isi `secrets`.
  */
 export class ConfigurationProbe implements ConnectionProbe {
+  /**
+   * `network` menyalakan sambungan sungguhan setelah bentuk konfigurasinya lolos.
+   *
+   * Bawaannya MENYALA. Uji koneksi yang hanya memeriksa bentuk menjawab "berhasil" untuk
+   * host yang tidak ada dan kata sandi yang salah — operator melihat centang hijau lalu
+   * berhenti mencari. Dimatikan hanya oleh pengujian yang memang tidak boleh menyentuh
+   * jaringan (TESTING.md Bagian 11).
+   */
+  constructor(private readonly network = true) {}
+
   async test(input: Parameters<ConnectionProbe['test']>[0]): Promise<{ ok: boolean; reasonKey?: string; latencyMs?: number }> {
     const started = Date.now();
     const requiredSecret: Record<ConnectionKind, string[]> = {
@@ -106,8 +117,27 @@ export class ConfigurationProbe implements ConnectionProbe {
       if (!input.secrets[field]) return { ok: false, reasonKey: 'error.connection_credential_required' };
     }
 
+    // Bentuknya benar. Sekarang buktikan bahwa sumbernya memang dapat dihubungi.
+    if (this.network) return probeConnection(input);
+
     return { ok: true, latencyMs: Date.now() - started };
   }
+}
+
+/**
+ * Hasil query menjadi CSV.
+ *
+ * Pengutipan bukan hiasan: satu nilai yang memuat koma — nama perusahaan "PT Maju, Tbk"
+ * sudah cukup — akan menggeser seluruh kolom di kanannya tanpa satu pun kesalahan muncul.
+ * Yang terlihat operator hanyalah tabel yang isinya salah.
+ *
+ * Aturannya RFC 4180: kutip bila memuat koma, kutip ganda, atau ganti baris; kutip ganda
+ * di dalam nilai digandakan.
+ */
+export function toCsv(columns: string[], rows: string[][]): string {
+  const cell = (value: string): string =>
+    /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+  return [columns.map(cell).join(','), ...rows.map((row) => row.map(cell).join(','))].join('\n');
 }
 
 export class ConnectionService {
@@ -321,6 +351,85 @@ export class ConnectionService {
   }
 
   /**
+   * Menarik data SUNGGUHAN dari basis data eksternal, lalu menyerahkannya untuk diserap.
+   *
+   * Sebelum ini, `sync()` menerima callback `fetcher` dan satu-satunya pemanggilnya adalah
+   * penyemai data demo — sehingga koneksi dapat dibuktikan hidup, tetapi datanya tidak
+   * pernah bisa masuk lewat jalur itu. Uji koneksi yang berhasil lalu tidak menghasilkan
+   * apa-apa adalah bentuk janji yang tidak ditepati.
+   *
+   * Hasilnya dialirkan sebagai CSV ke jalur unggah dataset yang SUDAH ADA, bukan jalur
+   * penyerapan tersendiri. Deteksi tipe kolom, pemeriksaan mutu, kuota, dan jejak audit
+   * sudah ada di sana dan sudah teruji; menduplikasinya berarti dua tempat yang harus
+   * sepakat — dan diam-diam menyimpang.
+   */
+  async syncFromSource(
+    connectionId: string,
+    ingest: (csv: string, suggestedName: string) => void,
+  ): Promise<{ outcome: string; rowsIngested: number; truncated: boolean }> {
+    const conn = this.ctx.db.get<{
+      id: string;
+      name: string;
+      kind: ConnectionKind;
+      host: string | null;
+      port: number | null;
+      database_name: string | null;
+      username: string | null;
+      options_json: string | null;
+    }>('external_connections', { id: connectionId });
+    if (!conn) throw new NotFoundError();
+
+    const options = (conn.options_json ? JSON.parse(conn.options_json) : {}) as Record<string, unknown>;
+    const query = String(options.query ?? '').trim();
+    if (query === '') throw new ValidationError('error.query_not_configured');
+
+    let truncated = false;
+    const result = await this.sync(connectionId, async () => {
+      const queried = await runQuery(
+        {
+          kind: conn.kind,
+          host: conn.host,
+          port: conn.port,
+          databaseName: conn.database_name,
+          username: conn.username,
+          secrets: this.loadSecrets(connectionId),
+          options,
+        },
+        query,
+        typeof options.rowLimit === 'number' ? options.rowLimit : undefined,
+      );
+
+      /**
+       * Kegagalan dilempar, bukan dikembalikan sebagai "berhasil dengan nol baris".
+       *
+       * Nol baris adalah hasil yang SAH — tabelnya memang kosong. Menyamakannya dengan
+       * kegagalan berarti riwayat sinkronisasi memperlihatkan keberhasilan pada hari
+       * server basis datanya mati, dan tidak ada yang datang memeriksa.
+       */
+      if (!queried.ok) throw new Error(queried.reasonKey ?? 'error.query_failed');
+
+      truncated = queried.truncated;
+      ingest(toCsv(queried.columns, queried.rows), conn.name);
+      return { rows: queried.rows.map((row) => Object.fromEntries(queried.columns.map((c, i) => [c, row[i]]))) };
+    });
+
+    /**
+     * Kegagalan dilempar, meski `sync()` mengembalikannya sebagai nilai.
+     *
+     * `sync()` sengaja menangkap: ia juga dipakai jalur terjadwal, dan pengecualian di sana
+     * akan menghentikan penjadwal untuk seluruh penyewa. Tetapi jalur MANUAL punya orang
+     * yang sedang menunggu di depan layar, dan jawaban 200 berisi kata "error" di dalamnya
+     * akan terbaca sebagai berhasil oleh setiap klien yang memeriksa status HTTP.
+     *
+     * Larinya tetap setelah `sync()` selesai, jadi riwayat dan penghitung kegagalannya
+     * sudah tercatat lebih dulu.
+     */
+    if (result.outcome !== 'success') throw new ValidationError(result.outcome);
+
+    return { ...result, truncated };
+  }
+
+  /**
    * Sinkronisasi terjadwal/manual (PRD 6.12, ARCHITECTURE.md 4.2).
    * Kegagalan memicu notifikasi ke Data Engineer melalui Alert Center.
    */
@@ -383,24 +492,50 @@ export class ConnectionService {
       return { outcome: 'success', rowsIngested: rows.length };
     } catch (error) {
       const at = nowIso();
-      const reasonKey = error instanceof Error && error.message === 'auth_failed'
+      /**
+       * Alasan yang SEBENARNYA dibawa apa adanya.
+       *
+       * Sebelumnya setiap kegagalan dicatat `auth_failed` dengan pesan "tidak terjangkau",
+       * apa pun sebabnya. Sepanjang satu-satunya pemanggil adalah penyemai data demo hal
+       * itu tidak terasa; begitu query sungguhan lewat sini, salah ketik nama tabel akan
+       * mengirim operator memeriksa kredensial — tempat yang sama sekali salah.
+       */
+      const thrown = error instanceof Error ? error.message : '';
+      const reasonKey = thrown === 'auth_failed'
         ? 'error.connection_auth_failed'
-        : 'error.connection_unreachable';
+        : thrown.startsWith('error.')
+          ? thrown
+          : 'error.connection_unreachable';
+
+      /**
+       * Query yang salah BUKAN koneksi yang bermasalah.
+       *
+       * Menghitungnya sebagai kegagalan koneksi berarti tiga kali salah ketik nama tabel
+       * mengunci koneksi yang sebenarnya sehat — dan yang terkunci bukan hanya orang yang
+       * salah ketik, melainkan seluruh sinkronisasi terjadwal di belakangnya.
+       */
+      const queryFault = reasonKey.startsWith('error.query_');
 
       this.ctx.db.update(
         'connection_sync_runs',
         { id: runId },
-        { finished_at: at, outcome: 'auth_failed', rows_ingested: 0, message_key: reasonKey },
+        {
+          finished_at: at,
+          outcome: queryFault ? 'query_failed' : 'auth_failed',
+          rows_ingested: 0,
+          message_key: reasonKey,
+        },
       );
-      const failures =
-        (this.ctx.db.get<{ consecutive_failures: number }>('external_connections', { id: connectionId })
-          ?.consecutive_failures ?? 0) + 1;
-      const locked = failures >= MAX_CONSECUTIVE_FAILURES;
+      const previous =
+        this.ctx.db.get<{ consecutive_failures: number }>('external_connections', { id: connectionId })
+          ?.consecutive_failures ?? 0;
+      const failures = queryFault ? previous : previous + 1;
+      const locked = !queryFault && failures >= MAX_CONSECUTIVE_FAILURES;
       this.ctx.db.update(
         'external_connections',
         { id: connectionId },
         {
-          status: locked ? 'locked' : 'auth_failed',
+          status: locked ? 'locked' : queryFault ? 'connected' : 'auth_failed',
           last_sync_at: at,
           last_sync_outcome: reasonKey,
           consecutive_failures: failures,
@@ -425,13 +560,24 @@ export class ConnectionService {
     }
   }
 
-  syncHistory(connectionId: string): Array<{ started_at: string; outcome: string; rows_ingested: number }> {
+  /**
+   * Riwayat sinkronisasi, BESERTA alasan kegagalannya.
+   *
+   * `message_key` sengaja ikut: riwayat yang hanya menyatakan "gagal" memaksa operator
+   * menebak, dan alasan yang akurat tetapi tidak dapat dibaca siapa pun tidak jauh lebih
+   * berguna daripada alasan yang keliru. Isinya kunci pesan, bukan kalimat dari basis data —
+   * pesan kesalahan basis data kerap memuat potongan query berikut nilainya.
+   */
+  syncHistory(
+    connectionId: string,
+  ): Array<{ started_at: string; outcome: string; rows_ingested: number; message_key: string | null }> {
     this.ctx.require('connection:read', { module: 'Koneksi Eksternal', objectId: connectionId });
-    return this.ctx.db.all<{ started_at: string; outcome: string; rows_ingested: number }>(
-      'connection_sync_runs',
-      { connection_id: connectionId },
-      { orderBy: 'started_at DESC', limit: 50 },
-    );
+    return this.ctx.db.all<{
+      started_at: string;
+      outcome: string;
+      rows_ingested: number;
+      message_key: string | null;
+    }>('connection_sync_runs', { connection_id: connectionId }, { orderBy: 'started_at DESC', limit: 50 });
   }
 
   /** Rotasi kredensial berkala (SECURITY.md Bagian 6, PRD Bagian 11 mitigasi risiko). */

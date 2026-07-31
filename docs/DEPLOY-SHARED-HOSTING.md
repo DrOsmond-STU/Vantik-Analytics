@@ -217,6 +217,14 @@ Mengikuti DEPLOYMENT.md Bagian 10 (checklist pra-peluncuran R1) dan SECURITY.md:
       aplikasi (blokir masa berlaku sendiri tetap berjalan — lihat 8.1d)
 - [ ] Jangka waktu berlangganan tenant sudah sesuai kontrak (lihat 8.1d) dan tanggal
       berakhirnya tercatat di luar sistem
+- [ ] **Ada pemegang peran Platform Operator** (lihat 8.1f) — tanpa `billing:settle`, tidak
+      ada seorang pun yang dapat mencatat pembayaran, dan pelanggan yang sudah transfer
+      tetap terkunci
+- [ ] `VANTIK_PAYMENT_WEBHOOK_SECRET` diisi bila memakai payment gateway; dibiarkan kosong
+      berarti webhook-nya MENOLAK semua pemberitahuan (fail secure)
+- [ ] Bila memakai Xendit/Midtrans (lihat 8.1g): kredensial diisi, **URL kabar pembayaran
+      terdaftar di dasbor penyedia**, dan satu pembayaran uji sudah membuka ruang kerja
+      secara otomatis
 - [ ] Jendela pemangkasan tabel ditinjau bila pemakaian berat (lihat 8.4); pertumbuhan
       berkas audit dipahami tidak dapat dipangkas (lihat 9b)
 - [ ] Kredensial notifikasi diisi (lihat 8.3) — SMTP minimal, karena tanpanya OTP pemindahan
@@ -287,10 +295,11 @@ Yang perlu diketahui operator:
 
 ### 8.1c Pendaftaran mandiri: buka atau tutup
 
-Halaman depan menawarkan paket berlangganan, dan pengunjung dapat membuat ruang kerja
-sendiri berstatus uji coba. Setiap pendaftaran yang berhasil **membuat tenant**, jadi
-jalurnya dibatasi 3 per jam per alamat IP — di shared hosting dengan satu berkas SQLite
-dan kuota disk, batas itu bukan formalitas.
+Halaman depan menawarkan paket berlangganan, dan pengunjung dapat mendaftar sendiri.
+Pendaftarannya menunggu persetujuan admin, dan ruang kerjanya belum dapat menulis sampai
+pembayaran pertama tercatat — tidak ada masa pakai gratis (lihat 8.1e). Setiap pendaftaran
+yang berhasil tetap **membuat tenant**, jadi jalurnya dibatasi 3 per jam per alamat IP — di
+shared hosting dengan satu berkas SQLite dan kuota disk, batas itu bukan formalitas.
 
 Untuk pemasangan internal yang penggunanya dibuat administrator, matikan:
 
@@ -345,13 +354,162 @@ Dua hal yang perlu Anda ketahui sebagai operator:
    ditunda tanpa penjadwal hanyalah penerbitan faktur, pengingat, dan kenaikan tangga
    status.
 2. **Ada jalan keluarnya dari dalam aplikasi.** Halaman *Langganan & Paket* tetap dapat
-   dibuka saat terkunci, dan tombol perpanjang di sana tetap berfungsi. Perpanjangan yang
-   dibayar sangat terlambat dihitung ulang dari tanggal pembayaran, sehingga tidak pernah
-   menghasilkan periode yang sudah lewat.
+   dibuka saat terkunci, dan tombolnya tetap berfungsi — tetapi tombol itu **menerbitkan
+   faktur**, bukan memperpanjang (lihat 8.1f). Perpanjangan yang dibayar sangat terlambat
+   dihitung ulang dari tanggal pembayaran, sehingga tidak pernah menghasilkan periode yang
+   sudah lewat.
 
 Pengingat perpanjangan dikirim 7 hari sebelum berakhir, ke pemegang peran Super Admin
 saja. Pengiriman itu **melewati antrean notifikasi** — baca 8.3: selama kanal email belum
 diisi, pesannya menunggu di antrean dan tidak sampai ke email siapa pun.
+
+#### 8.1f Siapa yang berwenang menyatakan sebuah faktur DIBAYAR
+
+Ini kontrol komersial terpenting di panduan ini, dan bentuknya sengaja tidak nyaman:
+**pelanggan tidak dapat menyatakan pembayarannya sendiri.**
+
+Tombol di halaman *Langganan & Paket* hanya **menerbitkan faktur**. Masa berlaku maju
+hanya setelah pembayarannya tercatat, dan yang berwenang mencatat hanya dua:
+
+| Pencatat | Bagaimana |
+|---|---|
+| **Webhook payment gateway** | `POST /webhooks/payment`, tanda tangan diverifikasi dengan `VANTIK_PAYMENT_WEBHOOK_SECRET` |
+| **Operator platform** | **Manajemen Tenant → Faktur menunggu pembayaran**, memakai izin `billing:settle` |
+
+Izin `billing:settle` **ditolak secara eksplisit** untuk Super Admin tenant, meski perannya
+memegang `*:*` — penolakan mengalahkan pemberian, jadi pemisahan ini tidak dapat dilanggar
+tanpa menyunting definisi peran. Alasannya sederhana: pihak yang berutang tidak boleh menjadi
+pihak yang menyatakan utangnya lunas.
+
+Alur pembayaran manual (transfer bank), yang berlaku selama payment gateway belum dipilih:
+
+1. Pelanggan menekan tombol di *Langganan & Paket* → faktur terbit, ruang kerja **tetap**
+   terkunci, dan layar menyebutkan bahwa aktivasi menunggu pembayaran tercatat.
+2. Pelanggan mentransfer sesuai jumlah pada faktur.
+3. Operator membuka **Manajemen Tenant → Faktur menunggu pembayaran**, mengisi **nomor
+   referensi** mutasi rekening, lalu menekan *Catat pembayaran*. Nomor referensi **wajib** —
+   pencatatan yang tidak dapat dicocokkan dengan mutasi tidak dapat ditinjau kemudian.
+4. Masa berlaku maju, ruang kerja terbuka, dan pelanggan menerima kabar lewat antrean
+   notifikasi (8.3).
+
+Dua hal yang perlu diketahui:
+
+- **Satu faktur hanya dapat dicatat sekali.** Mencatat dua kali akan memajukan masa berlaku
+  dua siklus untuk satu uang yang masuk, jadi percobaan kedua ditolak.
+- **Webhook DITOLAK selama `VANTIK_PAYMENT_WEBHOOK_SECRET` kosong.** Tanpa penjagaan itu,
+  tanda tangan yang sah adalah HMAC dengan kunci kosong — yang dapat dihitung siapa pun yang
+  tahu rahasianya belum diisi. Jalur ini menyatakan faktur lunas, jadi terbuka tanpa sengaja
+  bukan pilihan.
+
+Setiap pencatatan tercatat di **Log Aktivitas tenant yang dibayar** — bukan tenant
+operatornya — ditandai sebagai akses operator, lengkap dengan nomor referensinya. Jadi
+pelanggan dapat memeriksa sendiri riwayat pembayarannya.
+
+#### 8.1g Payment gateway: Xendit atau Midtrans (QRIS, VA, e-wallet)
+
+Bila diisi, tombol di halaman *Langganan & Paket* menghasilkan **tautan pembayaran** —
+halaman milik penyedia yang menampilkan **QRIS**, virtual account, dan e-wallet. Pelanggan
+membayar di sana, penyedia mengabari sistem, dan ruang kerja terbuka **otomatis** tanpa
+operator menyentuh apa pun.
+
+Kosong secara bawaan. Selama kosong, jalur manual di 8.1f tetap berjalan apa adanya.
+
+| Variabel | Wajib | Keterangan |
+|---|---|---|
+| `VANTIK_PAYMENT_PROVIDER` | ya | `xendit` atau `midtrans`. Kosong = pembayaran manual |
+| `VANTIK_PAYMENT_SECRET_KEY` | ya | Xendit: *Secret API Key*. Midtrans: *Server Key* |
+| `VANTIK_PAYMENT_CALLBACK_TOKEN` | Xendit | *Callback Verification Token* dari dasbor Xendit |
+| `VANTIK_PAYMENT_API_BASE` | tidak | Isi untuk memakai lingkungan sandbox penyedia |
+| `VANTIK_PAYMENT_SUCCESS_URL` | tidak | Tujuan setelah pembayaran selesai |
+| `VANTIK_PAYMENT_FAILURE_URL` | tidak | Tujuan bila pembayaran dibatalkan |
+
+Kanal aktif hanya bila **penyedia dan kunci rahasia** terisi. Setengah terkonfigurasi tidak
+diaktifkan: tautan bayar yang pasti gagal dibuat hanya menghasilkan pesan kesalahan di layar
+pelanggan, sementara "belum dikonfigurasi" menyatakan keadaan yang sebenarnya.
+
+**Daftarkan URL kabar pembayaran di dasbor penyedia:**
+
+```
+https://analitik.contoh.id/webhooks/payment
+```
+
+- **Xendit** → *Settings → Webhooks*, isi *Invoices paid* dengan URL di atas. Salin
+  *Callback Verification Token*-nya ke `VANTIK_PAYMENT_CALLBACK_TOKEN`. Xendit membuktikan
+  keaslian pesan lewat token itu; **selama token kosong, seluruh kabar DITOLAK.**
+- **Midtrans** → *Settings → Configuration → Payment Notification URL*. Midtrans tidak
+  memakai token: ia men-hash badan pesan bersama Server Key, jadi `CALLBACK_TOKEN` boleh
+  dibiarkan kosong.
+
+Empat hal yang perlu diketahui:
+
+1. **Satu faktur, satu tagihan.** Menekan tombol dua kali mengembalikan tautan yang sama —
+   nomor pembayaran tidak berubah-ubah, dan tidak ada tagihan menumpuk di sisi penyedia.
+2. **Kabar yang dikirim ulang tidak menambah masa berlaku.** Penyedia memang mengirim ulang
+   kabar yang tidak dijawab `200`; pengiriman kedua dijawab "diterima" tanpa memajukan
+   periode lagi.
+3. **Pembayaran yang masih ditinjau tidak membuka ruang kerja.** Pada Midtrans, `capture`
+   dengan `fraud_status: challenge` menunggu keputusan manual — memperlakukannya sebagai
+   lunas berarti membuka ruang kerja atas pembayaran yang masih dapat dibatalkan.
+4. **Gateway yang gagal tidak menggagalkan faktur.** Bila penyedia tidak dapat dihubungi,
+   fakturnya tetap sah, layar pelanggan mengatakan tautannya belum dapat dibuat, dan
+   pembayaran manual tetap dapat dicatat operator.
+
+Data kartu **tidak pernah** melewati sistem ini (SECURITY.md 16.3): yang disimpan hanya
+tautan pembayaran, rujukan transaksi, dan nama cara bayarnya.
+
+Endpoint `/webhooks/payment` **tidak memerlukan sesi** — payment gateway tidak punya, dan
+tidak boleh punya. Yang membuktikan keaslian pesan adalah tanda tangannya, dan verifikasi
+itulah otentikasinya. Endpoint ini dibatasi 120 permintaan per menit per alamat IP, cukup
+longgar karena penyedia mengirim ulang kabar yang belum dijawab `200`.
+
+Setiap pembayaran yang dikonfirmasi gateway tercatat di **Log Aktivitas tenant** dengan
+aktor `gateway:xendit` / `gateway:midtrans` — dibedakan dari `billing.payment_recorded` yang
+dicatat operator manusia, sehingga riwayatnya dapat dibaca: mana yang otomatis, mana yang
+dicocokkan manusia.
+
+> **Bila Anda memperbarui dari versi sebelumnya:** izin peran standar disegarkan dari kode
+> setiap kali aplikasi menyala, jadi pengetatan ini berlaku **setelah restart** — termasuk
+> untuk tenant yang sudah ada. Sebelumnya izin peran hanya ditulis sekali saat tenant dibuat,
+> sehingga pengetatan keamanan di kode tidak pernah sampai ke pelanggan lama. Peran **kustom**
+> milik tenant tidak disentuh.
+
+#### 8.1e Uji coba gratis: MATI secara bawaan
+
+Ruang kerja baru **tidak** mendapat masa pakai gratis. Alasannya komersial: pendaftaran
+mandiri yang menghadiahkan masa pakai penuh dapat diulang dengan alamat email baru, sehingga
+satu orang memakai platform tanpa pernah membayar — dan persetujuan admin hanya memindahkan
+beban itu ke manusia yang harus menebak mana pendaftar sungguhan, setiap hari.
+
+Yang terjadi pada ruang kerja yang baru dibuat:
+
+| Keadaan | Yang bisa dilakukan |
+|---|---|
+| Menunggu persetujuan admin | Belum dapat dimasuki sama sekali (lihat 8.1c) |
+| Sudah disetujui, belum dibayar | **Dapat dimasuki dan dibaca**, tetapi penulisan dihentikan |
+| Pembayaran pertama tercatat | Terbuka penuh, masa berlaku mulai berjalan |
+
+Dua gerbang itu berdiri sendiri — disetujui bukan berarti aktif.
+
+Pesannya **dibedakan** dari kedaluwarsa: ruang kerja yang belum pernah dibayar berbunyi
+"belum aktif — pembayaran pertama belum tercatat" dan mengarahkan ke **aktivasi**, bukan ke
+perpanjangan sesuatu yang belum pernah berjalan. Tombolnya pun berbunyi *Aktifkan*, bukan
+*Perpanjang*. Perbedaan itu disimpan di kolom `subscriptions.activated_at`.
+
+Bila Anda **memang** ingin menawarkan uji coba, isi jumlah harinya:
+
+```
+VANTIK_TRIAL_DAYS=14
+```
+
+Kosong atau `0` berarti tidak ada uji coba. Nilai yang tidak dapat dibaca sebagai angka
+diabaikan — salah ketik di `.env` tidak akan berarti "uji coba selama NaN hari".
+
+Dua catatan:
+
+- **Pelanggan yang sudah berjalan tidak terpengaruh.** Perubahan ini hanya berlaku untuk
+  tenant yang dibuat sesudahnya; langganan yang sudah aktif tetap aktif.
+- **Data contoh tetap punya uji coba**, karena memang menyebut jumlah harinya sendiri —
+  akun `ujicoba` di 8.1 masih memperagakan peringatan masa berlaku sebagaimana mestinya.
 
 ### 8.2 Penjadwal: pasang cron bila hosting mendukungnya
 
@@ -548,6 +706,238 @@ Tiga hal yang **tidak** akan dipangkas, dan itu disengaja:
 Lihat apa yang tumbuh, beserta jendela yang sedang berlaku, di
 `GET /api/v1/system/retention` (butuh izin `platform:health`).
 
+## 8.5 Masuk lewat SSO (OpenID Connect) — mati secara bawaan
+
+Cocok bila organisasi sudah memakai Google Workspace, Microsoft Entra ID (Azure AD), Keycloak,
+Authentik, atau penyedia OIDC lain, dan tidak ingin memelihara kata sandi kedua di sini.
+
+**Selama lima variabel di bawah kosong, SSO mati total**: tombol "Masuk dengan SSO" tidak
+digambar sama sekali, dan rutenya menolak dengan alasan terbaca alih-alih 500. Tombol yang
+pasti gagal lebih buruk daripada tidak ada tombol.
+
+| Variabel | Wajib | Isi |
+|---|---|---|
+| `VANTIK_OIDC_ISSUER` | ya | Alamat penyedia, mis. `https://accounts.google.com` atau `https://login.microsoftonline.com/<tenant-id>/v2.0` |
+| `VANTIK_OIDC_CLIENT_ID` | ya | Client ID dari pendaftaran aplikasi di sisi penyedia |
+| `VANTIK_OIDC_CLIENT_SECRET` | ya | Client secret dari pendaftaran yang sama |
+| `VANTIK_OIDC_REDIRECT_URI` | ya | Harus **persis sama** dengan yang didaftarkan di penyedia, mis. `https://analitik.domainanda.id/auth/sso/callback` |
+| `VANTIK_OIDC_ALLOWED_DOMAINS` | tidak | Daftar domain email yang boleh masuk, dipisah koma — mis. `domainanda.id, mitra.co.id`. Kosong berarti domain mana pun diterima |
+
+Setengah terisi **tidak** menyalakannya: bila salah satu dari empat yang wajib kosong, SSO
+tetap dianggap mati.
+
+Setelah diisi, **restart aplikasi** (Setup Node.js App → Restart).
+
+### Yang perlu didaftarkan di sisi penyedia
+
+- **Redirect URI**: nilai `VANTIK_OIDC_REDIRECT_URI` di atas, sama persis termasuk `https://`
+  dan tanpa garis miring tambahan di ujung.
+- **Scope**: `openid email profile`.
+- **Tipe aplikasi**: web (klien rahasia). PKCE dipakai meski begitu — kode otorisasi yang
+  bocor lewat riwayat peramban atau log proxy tidak cukup untuk ditukar menjadi token.
+
+### Empat hal yang perlu diketahui sebelum mengumumkannya ke pengguna
+
+1. **Akun tidak dibuat otomatis.** Pengguna harus sudah ada dan sudah diberi peran oleh
+   admin. Bila tidak, ia ditolak dengan pesan yang sama seperti kredensial salah.
+   Ini disengaja: pembuatan otomatis berarti siapa pun yang punya alamat di domain yang
+   diizinkan dapat menciptakan akun di ruang kerja Anda — dan `VANTIK_OIDC_ALLOWED_DOMAINS`
+   yang keliru diisi terlalu longgar menjadi lubang, bukan sekadar salah ketik.
+2. **Kode organisasi tetap diisi.** Penyedia identitas mengatakan *siapa* orangnya, bukan
+   *ruang kerja mana* yang ia tuju.
+3. **Kata sandi lokal tidak hilang.** SSO adalah cara masuk tambahan. Bila penyedia sedang
+   mati, admin tetap dapat masuk dengan kata sandi — tanpa ini, gangguan di sisi penyedia
+   mengunci seluruh organisasi di luar aplikasinya.
+4. **Gerbang lain berlaku sama persis**: akun nonaktif, ruang kerja yang belum disetujui,
+   ikatan perangkat, sesi tunggal, dan kewajiban MFA per peran. Peran yang mewajibkan
+   verifikasi dua langkah **tidak** menjadi bebas hanya karena masuk lewat SSO.
+
+Email yang **belum terverifikasi** di sisi penyedia ditolak. Penyedia yang membiarkan
+penggunanya menuliskan alamat apa pun di profil akan menjadi cara mengambil alih akun orang
+lain di sini — cukup dengan mengaku beralamat sama.
+
+### Bila gagal
+
+| Yang terlihat pengguna | Artinya |
+|---|---|
+| `error.sso_state_invalid` | Percobaan masuk sudah dipakai, atau dimulai di tab lain. Ulangi dari halaman masuk |
+| `error.sso_state_expired` | Lebih dari 10 menit di halaman penyedia. Ulangi |
+| `error.sso_exchange_failed` | Penyedia menolak menukar kode — biasanya `redirect_uri` atau client secret tidak cocok |
+| `error.sso_token_invalid` | Bukti identitas tidak diterima: tanda tangan, `aud`, `iss`, atau email belum terverifikasi |
+| Kredensial salah | Akunnya belum ada di ruang kerja itu, atau nonaktif |
+
+`error.sso_token_invalid` sengaja tidak menyebutkan bagian mana yang gagal. Alasan
+teknisnya berguna bagi operator — dan sama bergunanya bagi orang yang sedang menyusun token
+palsu, karena ia memberi tahu persis apa yang perlu diperbaiki.
+
+### SAML
+
+**Tidak didukung, dan tidak direncanakan.** SAML membutuhkan penanganan XML beserta
+kanonikalisasi tanda tangannya; pustaka yang melakukannya dengan benar terlalu besar untuk
+dipasang tanpa kompilasi di shared hosting, dan yang menuliskannya sendiri hampir selalu
+salah dengan cara yang tidak terlihat sampai ada yang memalsukan assertion. Penyedia SAML
+yang juga berbicara OIDC — Entra ID, Okta, Keycloak, Google — dapat dipakai lewat jalur
+OIDC di atas.
+
+---
+
+## 8.6 Ingest sensor MQTT — jembatan sebagai proses terpisah
+
+Berlaku bila Anda memakai **Digital Twin** dengan sensor yang melapor lewat MQTT.
+
+### Mengapa tidak di dalam aplikasi
+
+Passenger **mematikan proses yang idle**. Koneksi MQTT harus hidup terus untuk menerima
+apa pun; klien MQTT di dalam aplikasi akan mati bersama prosesnya dan diam-diam berhenti
+menerima data sensor. Yang terlihat: aplikasi berjalan normal, grafik sensor berhenti
+bertambah, dan tidak ada pesan kesalahan di mana pun. Itu bentuk kegagalan yang paling
+mahal — ia baru ketahuan berhari-hari kemudian.
+
+Karena itu jembatannya berdiri sendiri, di `infra/mqtt-bridge/`, dijalankan pada mesin
+yang memang selalu menyala: mini PC di lokasi, VPS kecil, atau Raspberry Pi. Ia berbicara
+MQTT ke dalam jaringan dan HTTPS ke luar — jadi tidak ada port yang perlu dibuka dari
+internet ke lantai pabrik.
+
+```
+sensor → broker MQTT → [jembatan] → HTTPS → aplikasi
+```
+
+Tanpa dependensi; cukup Node.js 20. Petunjuk lengkap beserta contoh unit systemd ada di
+`infra/mqtt-bridge/BACA-SAYA.md`.
+
+### Token ingest
+
+Jembatan tidak memakai akun pengguna. Alasannya bukan kenyamanan: proses tanpa orang di
+depannya tidak dapat menjawab tantangan MFA, dan aturan **sesi tunggal** membuat jembatan
+yang menyambung ulang menendang keluar orang yang sedang bekerja dengan akun itu.
+
+Sebagai **System Admin** atau **Super Admin**:
+
+```
+POST   /api/v1/twin/ingest-tokens      {"label": "Jembatan Pabrik 1"}
+GET    /api/v1/twin/ingest-tokens      daftar (tanpa nilai token)
+DELETE /api/v1/twin/ingest-tokens/:id  mencabut, berlaku seketika
+```
+
+Nilai tokennya ada di jawaban permintaan pembuatan dan **tidak pernah dapat dibaca lagi** —
+yang tersimpan hanya hash-nya, sama seperti kata sandi. Token yang hilang diganti dengan
+menerbitkan yang baru lalu mencabut yang lama.
+
+Yang dibawa token itu **satu izin**: mengirim pembacaan. Ia tidak dapat membaca dasbor,
+melihat daftar aset, atau membuat tiket, dan ia terikat pada **satu ruang kerja**.
+Jembatan yang dipasang di lemari panel adalah perangkat paling mudah diambil orang di
+seluruh pemasangan; yang bocor darinya harus sesedikit mungkin.
+
+`GET /api/v1/twin/ingest-tokens` juga menampilkan **kapan tiap token terakhir dipakai** —
+itulah cara mengenali token yang ditinggalkan bersama perangkat yang sudah dibuang.
+
+### Endpoint yang dipakai jembatan
+
+```
+POST /ingest/v1/twin/readings
+X-Vantik-Ingest-Token: vtk_ing_...
+
+{"readings":[{"assetCode":"PUMP-1","sensorCode":"vibration","value":4.2,
+              "observedAt":"2025-01-01T00:00:00Z"}]}
+```
+
+Menerima satu pembacaan atau sekelompok (maksimum 500). Jawabannya **200 meski sebagian
+ditolak**, disertai daftar yang ditolak beserta alasannya: status gagal akan membuat
+jembatan mengirim ulang pembacaan yang sudah berhasil masuk.
+
+Aset dan sensornya harus **sudah didaftarkan** di Digital Twin dengan kode yang sama
+persis. Jembatan tidak membuat aset — kalau ia membuatnya, satu salah ketik di topik MQTT
+akan melahirkan aset hantu yang tidak pernah dihapus siapa pun.
+
+### Satu perubahan pada izin yang perlu diketahui
+
+Mengirim pembacaan sensor kini menuntut izin `twin:ingest`, terpisah dari `twin:read`.
+Sebelumnya jalur ini tidak memeriksa izin sama sekali: setiap pengguna yang punya sesi
+dapat menyuntik pembacaan — membuat alarm palsu, atau menenggelamkan alarm yang benar di
+antara pembacaan karangan.
+
+Peran **System Admin** dan **Super Admin** memegangnya. Peran lain tidak, termasuk
+Supervisor yang memang melihat lantai pabrik dan membuat tiket. Bila ada integrasi lama
+yang mengirim pembacaan memakai akun pengguna biasa, integrasi itu perlu dipindah ke
+token ingest.
+
+---
+
+## 8.7 Menarik data dari basis data eksternal
+
+Berlaku bila Anda ingin data masuk dari PostgreSQL atau MySQL, bukan lewat unggahan berkas.
+
+### Cara kerjanya
+
+Query disimpan **di konfigurasi koneksi**, bukan dikirim per-permintaan. Itu disengaja:
+query yang dapat dikirim pemanggil menjadikan modul ini konsol SQL terhadap basis data
+pelanggan, bukan sebuah integrasi. Yang boleh mengubah query adalah orang yang boleh
+mengubah koneksinya (`connection:write`); yang boleh menjalankannya cukup `connection:sync`.
+
+```
+POST /api/v1/connections            {"name":"Gudang Data","kind":"postgresql",
+                                     "host":"...","port":5432,"databaseName":"...",
+                                     "username":"...","secrets":{"password":"..."},
+                                     "options":{"query":"SELECT wilayah, nilai FROM penjualan",
+                                                "rowLimit":10000}}
+POST /api/v1/connections/:id/sync   menjalankan query, hasilnya menjadi dataset
+GET  /api/v1/connections/:id/history riwayat, berikut alasan kegagalannya
+```
+
+Hasil query dialirkan sebagai CSV ke **jalur unggah dataset yang sudah ada**. Artinya
+deteksi tipe kolom, pemeriksaan mutu, kuota paket, dan jejak audit berlaku sama persis
+seperti unggahan manual — bukan jalur penyerapan kedua yang harus dijaga agar tetap sepakat.
+
+### Hanya SELECT
+
+Perintah selain `SELECT` (dan `WITH ... SELECT`) **ditolak sebelum satu byte pun dikirim**
+ke basis data. Termasuk yang ditolak: lebih dari satu pernyataan, komentar, dan
+`WITH ... AS (INSERT ...)` yang diawali `WITH` tetapi sebenarnya menulis.
+
+Alasannya bukan teori: kredensial koneksi sering diberi hak tulis oleh administrator basis
+data yang sedang terburu-buru. Tanpa gerbang ini, kolom query di layar konfigurasi menjadi
+jalan menghapus isi basis data produksi — dengan kredensial pelanggan sendiri, sehingga
+jejaknya pun menunjuk ke mereka.
+
+Pemeriksaannya sengaja ketat dan menolak apa pun yang meragukan. Query sah yang tertolak
+hanya merepotkan; query berbahaya yang lolos tidak dapat ditarik kembali.
+
+### Batas jumlah baris
+
+Bawaan **50.000 baris**, dapat diturunkan lewat `options.rowLimit`. Hasilnya dikumpulkan di
+memori sebelum masuk basis data, dan aplikasi ini berjalan dengan batas memori 512MB–1GB:
+satu `SELECT` tanpa `WHERE` pada tabel berisi jutaan baris akan mematikan prosesnya — dan
+yang mati bukan hanya sinkronisasi itu, melainkan aplikasi untuk **semua** penyewa.
+
+Bila hasilnya terpotong, jawabannya memuat `truncated: true`. Persempit query dengan `WHERE`
+atau `LIMIT`; memotong diam-diam berarti laporan yang salah tanpa ada yang tahu.
+
+Batas waktu satu penarikan: 60 detik.
+
+### Membaca kegagalan
+
+`GET /api/v1/connections/:id/history` memuat `outcome` dan `message_key`:
+
+| `outcome` | Artinya |
+|---|---|
+| `success` | Berhasil; `rows_ingested` menyatakan jumlah barisnya |
+| `query_failed` | Query-nya yang bermasalah — nama tabel/kolom salah, atau ditolak gerbang hanya-baca |
+| `auth_failed` | Koneksinya yang bermasalah — kredensial, jaringan, atau basis data tidak ada |
+
+Perbedaan itu penting dan sengaja dibuat: **query yang salah tidak menaikkan penghitung
+kegagalan koneksi dan tidak mengunci koneksinya.** Tanpa pemisahan itu, tiga kali salah
+ketik nama tabel akan mengunci koneksi yang sebenarnya sehat — dan yang terkunci bukan
+hanya orang yang salah ketik, melainkan seluruh sinkronisasi terjadwal di belakangnya.
+
+### Yang tidak dapat ditarik lewat jalur ini
+
+- **Oracle** — lihat §11. Uji koneksinya menjawab "driver tidak tersedia".
+- **REST dan Google Sheets** tidak berbicara SQL; keduanya punya jalurnya sendiri.
+- **MySQL dengan `caching_sha2_password`** (bawaan MySQL 8 di atas koneksi tanpa TLS) —
+  dijawab apa adanya saat uji koneksi, bukan dibiarkan gagal saat sinkronisasi.
+
+---
+
 ## 9. Backup
 
 Seluruh keadaan aplikasi ada di tiga berkas dalam `~/vantik-data/`:
@@ -650,7 +1040,9 @@ Bersikap jujur di muka lebih baik daripada Anda menemukannya saat sudah dipakai:
 | Batas CPU bersama | Forecast/regresi pada dataset besar lebih lambat | Jalankan pada jam senggang, atau pindah ke VPS. |
 | Tanpa cron sub-menit | Penjadwalan laporan & sinkronisasi bergantung cron cPanel (minimum 1 menit) | Cukup untuk kebutuhan harian/jam. |
 | SQLite, bukan basis data server | Penulisan bersamaan bertumpu pada satu berkas | Memadai untuk puluhan pengguna aktif. Untuk ratusan pengguna, pindah ke VPS. |
-| Tanpa MQTT | Digital Twin menerima data sensor lewat REST, bukan MQTT | Kirim pembacaan sensor ke `POST /api/v1/twin/readings`. |
+| Klien MQTT tidak dapat hidup di dalam aplikasi | Proses di-recycle saat idle; koneksi MQTT yang harus hidup terus akan mati bersamanya dan **diam-diam berhenti menerima data sensor** | Jalankan jembatan sebagai proses terpisah di mesin yang selalu menyala — lihat §8.6 dan `infra/mqtt-bridge/`. |
+| Koneksi Oracle | Membutuhkan Oracle Instant Client (pustaka native) yang tidak dapat dipasang tanpa akses root | Uji koneksi menjawab **"driver tidak tersedia"**, bukan berpura-pura berhasil. Ekspor ke CSV/XLSX, atau taruh REST endpoint di depan basis datanya. |
+| SSO SAML | Menuntut penanganan XML beserta kanonikalisasi tanda tangannya; pustaka yang benar terlalu besar untuk dipasang tanpa kompilasi, dan yang buatan sendiri hampir selalu salah tanpa terlihat | Pakai jalur **OIDC** (§8.5). Entra ID, Okta, Keycloak, dan Google Workspace berbicara keduanya. |
 
 **Kesimpulan jujur:** shared hosting cocok untuk pilot, satu divisi, atau organisasi
 kecil-menengah dengan pemakaian internal. Untuk beban penuh yang dibayangkan PRD

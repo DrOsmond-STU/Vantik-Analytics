@@ -48,7 +48,7 @@ export const dictionary = {
   'action.mfa_new_recovery_codes': ['Terbitkan kode pemulihan baru', 'Issue new recovery codes'],
   'action.copy': ['Salin', 'Copy'],
   'action.password_change': ['Ganti Kata Sandi', 'Change Password'],
-  'action.start_trial': ['Coba Gratis 14 Hari', 'Start 14-Day Free Trial'],
+  'action.start_trial': ['Berlangganan', 'Subscribe'],
   'action.subscribe': ['Berlangganan', 'Subscribe'],
   'action.forgot_password': ['Lupa kata sandi?', 'Forgot your password?'],
   'action.back_to_home': ['Kembali ke halaman depan', 'Back to home'],
@@ -321,6 +321,14 @@ export const dictionary = {
     'Jangka waktu berlangganan tidak dikenali.',
     'That subscription term is not recognised.',
   ],
+  'error.subscription_unpaid': [
+    'Ruang kerja ini belum aktif — pembayaran pertama belum tercatat. Data dapat dilihat dan diunduh, tetapi perubahan belum dapat disimpan.',
+    'This workspace is not active yet — no first payment has been recorded. Data can be viewed and downloaded, but changes cannot be saved yet.',
+  ],
+  'recovery.activate_subscription': [
+    'Buka Manajemen Langganan & Paket untuk menyelesaikan pembayaran. Hubungi admin bila pembayaran sudah dikirim tetapi belum tercatat.',
+    'Open Subscription Management to complete payment. Contact the admin if you have paid but it is not recorded yet.',
+  ],
   'recovery.renew_subscription': [
     'Buka Manajemen Langganan & Paket, lalu perpanjang untuk membuka kembali penulisan.',
     'Open Subscription Management and renew to restore write access.',
@@ -406,6 +414,46 @@ export const dictionary = {
   'error.connection_locked': [
     'Koneksi terkunci sementara setelah kegagalan autentikasi berulang.',
     'Connection temporarily locked after repeated authentication failures.',
+  ],
+  'error.connection_host_unreachable': [
+    'Host tidak dapat ditemukan. Periksa ejaan alamatnya, dan pastikan namanya dapat diselesaikan dari server ini.',
+    'The host could not be found. Check the address spelling and that it resolves from this server.',
+  ],
+  'error.connection_refused': [
+    'Sambungan ditolak. Server ada tetapi tidak menerima koneksi di port itu — periksa portnya, dan apakah alamat IP server ini diizinkan.',
+    'Connection refused. The server exists but is not accepting connections on that port — check the port, and whether this server\u2019s IP is allowed.',
+  ],
+  'error.connection_timeout': [
+    'Sambungan tidak dijawab sampai batas waktu. Biasanya firewall yang membuang paket tanpa menolaknya.',
+    'The connection timed out. This usually means a firewall is dropping packets rather than refusing them.',
+  ],
+  'error.connection_reset': [
+    'Sambungan diputus server di tengah jalan.',
+    'The server closed the connection midway.',
+  ],
+  'error.connection_failed': [
+    'Sambungan gagal. Rinciannya ada di keterangan hasil uji.',
+    'The connection failed. See the test result detail.',
+  ],
+  'error.connection_credential_rejected': [
+    'Server dapat dihubungi, tetapi kredensialnya ditolak. Sambungannya benar — yang perlu diperbaiki nama pengguna atau kata sandinya.',
+    'The server was reachable but rejected the credentials. The connection itself is fine — the username or password needs fixing.',
+  ],
+  'error.connection_database_missing': [
+    'Server dapat dihubungi dan kredensialnya diterima, tetapi basis data dengan nama itu tidak ada.',
+    'The server was reachable and the credentials accepted, but no database with that name exists.',
+  ],
+  'error.connection_auth_unsupported': [
+    'Server memakai metode autentikasi yang belum didukung. Keterangan hasil uji menyebutkan metodenya.',
+    'The server uses an authentication method that is not supported yet. The test result detail names it.',
+  ],
+  'error.connection_credential_malformed': [
+    'Isi kredensial tidak dapat dibaca. Untuk Google Sheets, tempelkan berkas JSON service account apa adanya.',
+    'The credential content could not be read. For Google Sheets, paste the service account JSON as-is.',
+  ],
+  'error.connection_driver_unavailable': [
+    'Jenis sumber ini memerlukan pustaka yang tidak dapat dipasang di shared hosting. Oracle membutuhkan Oracle Instant Client — gunakan VPS, atau ekspor datanya lewat CSV/XLSX.',
+    'This source type requires a library that cannot be installed on shared hosting. Oracle needs the Oracle Instant Client — use a VPS, or export the data via CSV/XLSX.',
   ],
   'error.connection_credential_required': ['Kredensial koneksi belum lengkap.', 'Connection credentials are incomplete.'],
   'error.connection_host_required': ['Host wajib diisi.', 'Host is required.'],
@@ -818,8 +866,8 @@ export const dictionary = {
     'One place for data, KPIs, statistical analysis, and reporting — with an audit trail nobody can alter, administrators included.',
   ],
   'ui.landing_trial_note': [
-    'Uji coba 14 hari. Tanpa kartu kredit, dan datanya tetap milik Anda.',
-    'A 14-day trial. No credit card, and the data stays yours.',
+    'Pendaftaran ditinjau admin lebih dulu. Ruang kerja aktif setelah pembayaran, dan datanya tetap milik Anda.',
+    'Registrations are reviewed by an admin first. The workspace activates after payment, and the data stays yours.',
   ],
   'ui.landing_modules_title': ['Yang Anda dapatkan', 'What you get'],
   'ui.landing_modules_sub': [
@@ -860,8 +908,8 @@ export const dictionary = {
   'ui.plan_ai': ['Panggilan AI per bulan: {value}', 'AI calls per month: {value}'],
   'ui.signup_title': ['Buat ruang kerja', 'Create your workspace'],
   'ui.signup_sub': [
-    'Ruang kerja langsung aktif dalam mode uji coba. Anda menjadi administrator pertamanya.',
-    'Your workspace starts immediately in trial mode. You become its first administrator.',
+    'Anda menjadi administrator pertamanya. Pendaftaran ditinjau admin, lalu ruang kerja aktif setelah pembayaran pertama.',
+    'You become its first administrator. Registrations are reviewed by an admin, then the workspace activates after the first payment.',
   ],
   'ui.signup_plan': ['Paket', 'Plan'],
   'ui.signup_cycle': ['Jangka waktu berlangganan', 'Subscription term'],
@@ -894,14 +942,76 @@ export const dictionary = {
     'Masa berlaku berakhir dalam {days} hari. Perpanjang sebelum tanggal itu agar ruang kerja tidak beralih ke mode baca-saja.',
     'Your term ends in {days} days. Renew before then to keep the workspace out of read-only mode.',
   ],
+  'ui.subscription_unpaid_hint': [
+    'Ruang kerja belum pernah aktif. Selesaikan pembayaran pertama untuk membuka penulisan — data yang sudah ada tetap utuh.',
+    'This workspace has never been active. Complete the first payment to unlock writing — existing data stays intact.',
+  ],
+  'action.request_renewal_for': [
+    'Terbitkan faktur perpanjangan {cycle} — {price}',
+    'Issue renewal invoice {cycle} — {price}',
+  ],
+  'action.request_activation_for': [
+    'Terbitkan faktur aktivasi {cycle} — {price}',
+    'Issue activation invoice {cycle} — {price}',
+  ],
+  'action.record_payment': ['Catat pembayaran', 'Record payment'],
+  'action.pay_now': ['Bayar sekarang', 'Pay now'],
+  'ui.pay_now_hint': [
+    'Halaman pembayaran akan terbuka di tab baru — pilih QRIS, virtual account, atau e-wallet di sana. Ruang kerja terbuka otomatis begitu pembayarannya dikonfirmasi.',
+    'The payment page opens in a new tab — choose QRIS, virtual account, or e-wallet there. The workspace opens automatically once payment is confirmed.',
+  ],
+  'ui.pay_link_failed': [
+    'Tautan pembayaran belum dapat dibuat. Fakturnya tetap sah — hubungi admin untuk menyelesaikan pembayaran, atau coba lagi sebentar lagi.',
+    'The payment link could not be created. The invoice is still valid — contact the admin to complete payment, or try again shortly.',
+  ],
+  'error.payment_gateway_not_configured': [
+    'Payment gateway belum dikonfigurasi, jadi kabar pembayaran ditolak.',
+    'The payment gateway is not configured, so payment notifications are refused.',
+  ],
+  'error.payment_callback_token_missing': [
+    'Token verifikasi payment gateway belum diisi, jadi kabar pembayaran tidak dapat dipercaya.',
+    'The payment gateway verification token is not set, so payment notifications cannot be trusted.',
+  ],
+  'error.webhook_payload_invalid': [
+    'Badan kabar pembayaran tidak dapat dibaca.',
+    'The payment notification body could not be read.',
+  ],
+  'ui.invoice_issued': [
+    'Faktur {number} sudah diterbitkan sebesar {total}.',
+    'Invoice {number} has been issued for {total}.',
+  ],
+  'ui.invoice_awaiting_payment': [
+    'Ruang kerja terbuka setelah pembayarannya tercatat. Kirimkan bukti transfer bila diminta; admin platform akan mencocokkannya dengan mutasi rekening.',
+    'The workspace opens once the payment is recorded. Send proof of transfer if asked; a platform admin will match it against the bank statement.',
+  ],
+  'ui.unpaid_invoices': ['Faktur menunggu pembayaran', 'Invoices awaiting payment'],
+  'ui.unpaid_invoices_none': ['Tidak ada faktur yang menunggu pembayaran.', 'No invoices are awaiting payment.'],
+  'ui.invoice_number': ['Nomor faktur', 'Invoice number'],
+  'ui.invoice_total': ['Jumlah', 'Amount'],
+  'ui.payment_reference': ['Nomor referensi', 'Reference number'],
+  'ui.payment_reference_hint': ['Nomor mutasi / bukti transfer', 'Bank statement or transfer reference'],
+  'ui.first_payment': ['pembayaran pertama', 'first payment'],
+  'error.payment_reference_required': [
+    'Nomor referensi wajib diisi — tanpa itu pembayaran tidak dapat dicocokkan dengan mutasi rekening.',
+    'A reference number is required — without it the payment cannot be matched against the bank statement.',
+  ],
+  'error.invoice_already_paid': [
+    'Faktur ini sudah tercatat dibayar. Mencatatnya dua kali akan memajukan masa berlaku dua kali untuk satu pembayaran.',
+    'This invoice is already recorded as paid. Recording it twice would extend the term twice for one payment.',
+  ],
+  'error.payment_webhook_not_configured': [
+    'Webhook payment gateway belum dikonfigurasi, jadi pemberitahuan pembayaran ditolak.',
+    'The payment gateway webhook is not configured, so payment notifications are refused.',
+  ],
+  'action.activate_for': ['Aktifkan {cycle} — {price}', 'Activate {cycle} — {price}'],
   'ui.subscription_renew_hint': [
     'Perpanjang untuk membuka kembali penulisan. Data Anda tetap utuh selama masa ini.',
     'Renew to restore write access. Your data stays intact throughout.',
   ],
   'action.renew_for': ['Perpanjang {cycle} — {price}', 'Renew {cycle} — {price}'],
   'ui.signup_summary': [
-    'Setelah uji coba berakhir: {plan}, {price} per {cycle}. Dapat diubah atau dihentikan kapan saja.',
-    'After the trial ends: {plan}, {price} per {cycle}. Change or cancel any time.',
+    'Yang akan ditagihkan: {plan}, {price} per {cycle}. Dapat diubah atau dihentikan kapan saja.',
+    'What will be billed: {plan}, {price} per {cycle}. Change or cancel any time.',
   ],
   'ui.signup_org': ['Nama organisasi', 'Organisation name'],
   'ui.signup_slug': ['Alamat ruang kerja', 'Workspace address'],
@@ -912,8 +1022,8 @@ export const dictionary = {
   'ui.signup_name': ['Nama Anda', 'Your name'],
   'ui.signup_done_title': ['Ruang kerja siap', 'Your workspace is ready'],
   'ui.signup_done_body': [
-    'Masuk memakai kode organisasi "{slug}" beserta email dan kata sandi yang baru saja Anda buat.',
-    'Sign in with organisation code "{slug}" and the email and password you just created.',
+    'Masuk memakai kode organisasi "{slug}" beserta email dan kata sandi yang baru saja Anda buat. Ruang kerja dapat dibuka dan dibaca; penulisan terbuka setelah pembayaran pertama tercatat.',
+    'Sign in with organisation code "{slug}" and the email and password you just created. The workspace opens and reads fine; writing unlocks once the first payment is recorded.',
   ],
   'ui.forgot_title': ['Lupa kata sandi', 'Forgot password'],
   'ui.forgot_sub': [
@@ -984,6 +1094,65 @@ export const dictionary = {
   'ui.current_device': ['Perangkat ini', 'This device'],
   'ui.confidence_low': ['Keyakinan rendah', 'Low confidence'],
   'ui.projection_note': ['Proyeksi, bukan kepastian.', 'A projection, not a certainty.'],
+
+  /* ----- Masuk lewat SSO ----- */
+  'action.login_sso': ['Masuk dengan SSO', 'Sign in with SSO'],
+  'ui.sso_or': ['atau', 'or'],
+  'ui.sso_provider': ['Penyedia: {provider}', 'Provider: {provider}'],
+  'ui.sso_redirecting': ['Mengalihkan ke penyedia identitas…', 'Redirecting to your identity provider…'],
+  'ui.sso_finishing': ['Menyelesaikan proses masuk…', 'Finishing sign-in…'],
+  'error.sso_not_configured': [
+    'Masuk lewat SSO belum diatur pada pemasangan ini.',
+    'SSO sign-in is not configured on this installation.',
+  ],
+  'error.sso_state_invalid': [
+    'Proses masuk ini tidak dikenali lagi — mungkin sudah dipakai atau dibuka dari tab lain. Silakan ulangi dari halaman masuk.',
+    'This sign-in attempt is no longer recognised — it may already have been used, or started in another tab. Please start again from the sign-in page.',
+  ],
+  'error.sso_state_expired': [
+    'Proses masuk ini sudah kedaluwarsa. Silakan ulangi dari halaman masuk.',
+    'This sign-in attempt has expired. Please start again from the sign-in page.',
+  ],
+  'error.sso_exchange_failed': [
+    'Penyedia identitas menolak menyelesaikan proses masuk. Hubungi admin bila ini berulang.',
+    'The identity provider refused to complete sign-in. Contact your admin if this keeps happening.',
+  ],
+  'error.sso_token_invalid': [
+    'Bukti identitas dari penyedia tidak dapat diterima. Hubungi admin.',
+    'The proof of identity from the provider could not be accepted. Contact your admin.',
+  ],
+  'error.tenant_slug_required': ['Kode organisasi wajib diisi.', 'The organisation code is required.'],
+
+  /* ----- Penarikan data dari basis data eksternal ----- */
+  'error.query_not_configured': [
+    'Koneksi ini belum punya query. Isi query SELECT-nya di pengaturan koneksi sebelum menyinkronkan.',
+    'This connection has no query yet. Set its SELECT query in the connection settings before syncing.',
+  ],
+  'error.query_select_only': [
+    'Hanya perintah SELECT yang boleh dijalankan lewat koneksi ini.',
+    'Only SELECT statements may be run through this connection.',
+  ],
+  'error.query_multiple_statements': [
+    'Query hanya boleh berisi satu perintah.',
+    'The query may contain only one statement.',
+  ],
+  'error.query_comment_not_allowed': [
+    'Query tidak boleh memuat komentar.',
+    'The query may not contain comments.',
+  ],
+  'error.query_empty': ['Query belum diisi.', 'The query is empty.'],
+  'error.query_failed': [
+    'Basis data menolak query ini. Periksa nama tabel dan kolomnya.',
+    'The database rejected this query. Check the table and column names.',
+  ],
+  'ui.sync_truncated': [
+    'Hasil dipotong pada {rows} baris pertama. Persempit query dengan WHERE atau LIMIT agar lengkap.',
+    'Results were capped at the first {rows} rows. Narrow the query with WHERE or LIMIT to get everything.',
+  ],
+  'recovery.sso_start_again': [
+    'Kembali ke halaman masuk lalu ulangi. Bila tetap gagal, hubungi admin.',
+    'Return to the sign-in page and try again. Contact your admin if it keeps failing.',
+  ],
 } as const satisfies Record<string, readonly [string, string]>;
 
 export type DictionaryKey = keyof typeof dictionary;

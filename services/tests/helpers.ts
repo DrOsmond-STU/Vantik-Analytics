@@ -79,7 +79,16 @@ export function provisionTenant(
       slug,
       planCode: options.planCode ?? 'enterprise',
       billingCycle: options.billingCycle ?? 'monthly',
-      trialDays: options.trialDays,
+      /**
+       * Fixture SENGAJA berlangganan aktif, bukan mengikuti bawaan produksi.
+       *
+       * Uji coba gratis kini mati secara bawaan, sehingga tenant baru lahir belum aktif
+       * dan tidak dapat menulis. Bila fixture mengikuti bawaan itu, ratusan uji yang
+       * sedang memeriksa hal lain akan gagal karena penulisannya diblokir — dan yang
+       * terbaca dari kegagalannya bukan "uji coba mati", melainkan kebisingan. Perilaku
+       * bawaan produksinya diuji tersendiri di `trial-disabled.test.ts`.
+       */
+      trialDays: options.trialDays ?? 30,
       admin: {
         fullName: 'Admin Uji',
         nik: `NIK-${slug}`,

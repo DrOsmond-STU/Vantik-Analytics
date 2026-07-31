@@ -1429,6 +1429,130 @@ function PendingRegistrationsPanel(): JSX.Element | null {
   );
 }
 
+/** Faktur yang menunggu pembayaran, lintas tenant. */
+interface UnpaidInvoice {
+  id: string;
+  number: string;
+  tenant_name: string;
+  tenant_slug: string;
+  plan_code: string;
+  billing_cycle: string;
+  total: number;
+  due_at: string;
+  period_end: string;
+  first_payment: number;
+}
+
+/**
+ * Antrean pembayaran operator platform.
+ *
+ * Ada karena wewenang menyatakan sebuah faktur lunas sengaja DIPINDAHKAN dari pelanggan ke
+ * sisi platform: pihak yang berutang tidak boleh menjadi pihak yang menyatakan utangnya
+ * lunas. Tanpa panel ini, pemindahan itu berarti pembayaran hanya dapat dicatat lewat
+ * panggilan API manual — dan pelanggan yang sudah transfer tetap terkunci.
+ *
+ * Disembunyikan bagi yang tidak memegang `billing:settle`, sehingga tidak ada tombol yang
+ * mengarah ke penolakan.
+ */
+function UnpaidInvoicesPanel(): JSX.Element | null {
+  const { t, locale, session } = useApp();
+  const [nonce, setNonce] = useState(0);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [refs, setRefs] = useState<Record<string, string>>({});
+  const [errorKey, setErrorKey] = useState<string | null>(null);
+  const boleh = session?.permissions.includes('billing:settle') ?? false;
+  const state = useAsync(
+    () =>
+      boleh
+        ? api.get<{ invoices: UnpaidInvoice[] }>('/system/invoices/unpaid')
+        : Promise.resolve({ invoices: [] }),
+    [nonce, boleh],
+  );
+
+  if (!boleh) return null;
+
+  async function record(id: string): Promise<void> {
+    setBusy(id);
+    setErrorKey(null);
+    try {
+      await api.post(`/system/invoices/${id}/payment`, {
+        reference: refs[id] ?? '',
+        methodLabel: locale === 'id' ? 'Transfer bank' : 'Bank transfer',
+      });
+      setNonce((n) => n + 1);
+    } catch (error) {
+      setErrorKey(error instanceof ApiError ? error.key : 'error.internal');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Panel title={t('ui.unpaid_invoices')} span="full">
+      {errorKey && <div className="note warn" style={{ marginBottom: 12 }}>{t(errorKey)}</div>}
+      {!state.data || state.data.invoices.length === 0 ? (
+        <div className="note">{t('ui.unpaid_invoices_none')}</div>
+      ) : (
+        <div className="table-scroll">
+          <table className="stack-mobile">
+            <thead>
+              <tr>
+                <th>{t('ui.invoice_number')}</th>
+                <th>{t('table.name')}</th>
+                <th>{t('ui.plan_label')}</th>
+                <th>{t('ui.invoice_total')}</th>
+                <th>{t('ui.payment_reference')}</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {state.data.invoices.map((inv) => (
+                <tr key={inv.id}>
+                  <td className="mono" data-label={t('ui.invoice_number')}>
+                    {inv.number}
+                    <div className="feed-time">{formatDate(inv.due_at, locale)}</div>
+                  </td>
+                  <td data-label={t('table.name')}>
+                    {inv.tenant_name}
+                    <div className="feed-time">{inv.tenant_slug}</div>
+                  </td>
+                  <td data-label={t('ui.plan_label')}>
+                    {inv.plan_code}
+                    <div className="feed-time">
+                      {t(`ui.cycle_${inv.billing_cycle}`)}
+                      {/* Pembayaran pertama ditandai: menyetujui pendaftaran tidak sama
+                          dengan mengaktifkan ruang kerjanya. */}
+                      {inv.first_payment ? ` · ${t('ui.first_payment')}` : ''}
+                    </div>
+                  </td>
+                  <td data-label={t('ui.invoice_total')}>{formatCurrency(inv.total, locale)}</td>
+                  <td data-label={t('ui.payment_reference')}>
+                    <input
+                      value={refs[inv.id] ?? ''}
+                      placeholder={t('ui.payment_reference_hint')}
+                      onChange={(e) => setRefs((prev) => ({ ...prev, [inv.id]: e.target.value }))}
+                    />
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="btn primary"
+                      disabled={busy === inv.id || !(refs[inv.id] ?? '').trim()}
+                      onClick={() => void record(inv.id)}
+                    >
+                      {t('action.record_payment')}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 export function TenantView(): JSX.Element {
   const { t, locale, session } = useApp();
   const state = useAsync(() => api.get<{ tenants: Array<{ id: string; name: string; slug: string; status: string; isolation_level: string; created_at: string }> }>('/tenants'), []);
@@ -1441,6 +1565,7 @@ export function TenantView(): JSX.Element {
         {(data) => (
           <div className="grid g-12">
             <PendingRegistrationsPanel />
+            <UnpaidInvoicesPanel />
 
             <Panel span="wide">
               <div className="table-scroll">
@@ -1491,6 +1616,7 @@ interface SubscriptionPayload {
     cycle_months: number;
     status: string;
     trial_ends_at: string | null;
+    activated_at: string | null;
     current_period_end: string;
     pending_plan_code: string | null;
     expires_at: string;
@@ -1510,24 +1636,41 @@ export function SubscriptionView(): JSX.Element {
   const [noticeKey, setNoticeKey] = useState<string | null>(null);
   const state = useAsync(() => api.get<SubscriptionPayload>('/subscription'), [nonce]);
 
+  const [invoice, setInvoice] = useState<{
+    number: string;
+    total: number;
+    period_end: string;
+    pay_url: string | null;
+    charge_error: string | null;
+  } | null>(null);
+
   /**
-   * Perpanjangan.
+   * Meminta faktur perpanjangan.
    *
-   * Token pembayaran di sini adalah rujukan dari payment gateway — data kartu tidak
-   * pernah melewati sistem ini (SECURITY.md 16.3). Selama gateway belum dipasang,
-   * operator memakai rujukan transfer manual.
+   * Tombol ini TIDAK memperpanjang apa pun. Ia menerbitkan tagihan; masa berlaku maju hanya
+   * setelah pembayarannya tercatat — oleh webhook payment gateway atau oleh operator yang
+   * mencocokkannya dengan mutasi rekening. Sebelumnya tombol ini mengirim token pembayaran
+   * karangan dan langsung memperpanjang, yang berarti siapa pun dapat memperpanjang
+   * ruang kerjanya gratis.
    */
-  async function renew(): Promise<void> {
+  async function requestRenewal(): Promise<void> {
     setBusy(true);
     setNoticeKey(null);
     try {
-      await api.post('/subscription/renew', {
-        paymentToken: `manual-${Date.now().toString(36)}`,
-        paymentMethodLabel: locale === 'id' ? 'Transfer manual' : 'Manual transfer',
-      });
+      const hasil = await api.post<{
+        invoice: {
+          number: string;
+          total: number;
+          period_end: string;
+          pay_url: string | null;
+          charge_error: string | null;
+        };
+      }>('/subscription/renew', {});
+      setInvoice(hasil.invoice);
       setNonce((n) => n + 1);
-      // Sesi memuat `flags.readOnly`; tanpa memuat ulang, aplikasi masih menganggap
-      // ruang kerja terkunci sampai pengguna menyegarkan halaman sendiri.
+      // Sesi memuat `flags.readOnly`. Ruang kerja BELUM terbuka di sini — memuat ulang
+      // sesi tetap benar supaya angka masa berlakunya mutakhir bila ternyata sudah dibayar
+      // lewat jalur lain.
       await refreshSession();
     } catch (error) {
       setNoticeKey(error instanceof ApiError ? error.key : 'error.internal');
@@ -1565,7 +1708,12 @@ export function SubscriptionView(): JSX.Element {
 
               {/* Keadaan yang paling perlu dijelaskan, dijelaskan paling jelas: apa yang
                   terjadi sekarang, dan apa yang membukanya kembali. */}
-              {data.subscription.expired ? (
+              {data.subscription.expired && !data.subscription.activated_at ? (
+                <div className="note warn" style={{ marginTop: 12 }}>
+                  <div>{t('error.subscription_unpaid')}</div>
+                  <div style={{ marginTop: 6 }}>{t('ui.subscription_unpaid_hint')}</div>
+                </div>
+              ) : data.subscription.expired ? (
                 <div className="note warn" style={{ marginTop: 12 }}>
                   <div>{t('error.subscription_expired')}</div>
                   <div style={{ marginTop: 6 }}>{t('ui.subscription_renew_hint')}</div>
@@ -1578,11 +1726,49 @@ export function SubscriptionView(): JSX.Element {
 
               {noticeKey && <div className="note warn" style={{ marginTop: 12 }}>{t(noticeKey)}</div>}
 
+              {/* Faktur sudah terbit tetapi BELUM dibayar. Mengatakannya apa adanya lebih
+                  baik daripada membiarkan pengguna menebak mengapa ruang kerjanya masih
+                  terkunci setelah menekan tombol. */}
+              {invoice && (
+                <div className="note info" style={{ marginTop: 12 }} data-testid="renewal-invoice">
+                  <div>
+                    {t('ui.invoice_issued', {
+                      number: invoice.number,
+                      total: formatCurrency(invoice.total, locale),
+                    })}
+                  </div>
+
+                  {/* Tautan bayar bila payment gateway dikonfigurasi. Halaman penyedia-lah
+                      yang menampilkan QRIS, virtual account, dan e-wallet — sistem ini tidak
+                      menggambar kode QR sendiri, dan tidak pernah menyentuh data kartu. */}
+                  {invoice.pay_url ? (
+                    <div style={{ marginTop: 10 }}>
+                      <a
+                        className="btn primary"
+                        href={invoice.pay_url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        data-testid="pay-now"
+                      >
+                        {t('action.pay_now')}
+                      </a>
+                      <div style={{ marginTop: 6 }}>{t('ui.pay_now_hint')}</div>
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 6 }}>
+                      {/* Dibedakan: belum dikonfigurasi bukan hal yang sama dengan gagal
+                          dihubungi, dan pelanggan berhak tahu yang mana. */}
+                      {t(invoice.charge_error ? 'ui.pay_link_failed' : 'ui.invoice_awaiting_payment')}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button type="button" className="btn primary" disabled={busy} onClick={() => void renew()}>
+                <button type="button" className="btn primary" disabled={busy} onClick={() => void requestRenewal()}>
                   {busy
                     ? t('ui.loading')
-                    : t('action.renew_for', {
+                    : t(data.subscription.activated_at ? 'action.request_renewal_for' : 'action.request_activation_for', {
                         cycle: t(`ui.cycle_${data.subscription.billing_cycle}`),
                         price: formatCurrency(data.subscription.price, locale),
                       })}

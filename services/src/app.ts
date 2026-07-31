@@ -12,13 +12,15 @@ import cookieParser from 'cookie-parser';
 
 import { AuditService } from './audit-service/index.ts';
 import { openDatabase, type Db, type DbPaths } from './platform/db.ts';
+import { PlatformBillingService } from './billing-service/settlement.ts';
+import { resolveGatewayFromEnv } from './billing-service/gateway.ts';
 import { NotificationOutbox } from './platform/outbox.ts';
 import { OutboxDispatcher } from './platform/outboxDispatcher.ts';
 import { Scheduler, SCHEDULER_INTERVAL_MS, type JobRunner } from './platform/scheduler.ts';
 import { pruneExpiredRows, retentionReport } from './platform/retention.ts';
 import { transportFromEnv, type ChannelRoutingTransport } from './platform/transports.ts';
 import { KeyRing } from './platform/crypto.ts';
-import { ValidationError } from './platform/errors.ts';
+import { AppError, ValidationError } from './platform/errors.ts';
 import {
   asyncRoute,
   authenticate,
@@ -41,6 +43,8 @@ import { requiresMfa } from './platform/rbac.ts';
 
 import { AuthService, AuthorizationService, DeviceService, EmployeeService } from './identity-service/index.ts';
 import type { FingerprintComponents } from './identity-service/deviceFingerprint.ts';
+import { resolveOidcFromEnv } from './identity-service/oidc.ts';
+import { OidcLoginFlow } from './identity-service/oidcFlow.ts';
 import { TenantService } from './tenant-service/index.ts';
 import { BillingService } from './billing-service/index.ts';
 import { MeteringService } from './metering-service/index.ts';
@@ -62,6 +66,7 @@ import {
 import { DashboardService, EmbedRenderer, EmbedService, ReportService } from './designer-service/index.ts';
 import { AlertService, QueueOnlyTransport, type NotificationTransport } from './alerting-service/index.ts';
 import { DigitalTwinService } from './iot-gateway-service/index.ts';
+import { IngestTokenService, contextFromIngestToken } from './iot-gateway-service/ingest.ts';
 import { BalancedScorecardService, CockpitService } from './presentation-service/index.ts';
 
 export interface AppOptions {
@@ -115,6 +120,14 @@ export function createApp(options: AppOptions = {}): VantikApp {
 
   const auth = new AuthService(db, audit, outbox);
   const tenants = new TenantService(db, audit);
+  /**
+   * Billing sisi platform: lintas tenant, dan sengaja TERPISAH dari `BillingService`.
+   *
+   * `BillingService` bekerja di dalam satu tenant dan dipakai pelanggan; layanan ini bekerja
+   * di atas seluruh tenant dan dipakai operator. Memisahkannya membuat wewenang menyatakan
+   * pembayaran tidak pernah kebetulan berada di tangan pihak yang berutang.
+   */
+  const platformBilling = new PlatformBillingService(db, audit);
   tenants.seedPlans();
 
   const deps: HttpDeps = { db, audit, auth };
@@ -194,6 +207,11 @@ export function createApp(options: AppOptions = {}): VantikApp {
     (process.env.VANTIK_SELF_SIGNUP ?? 'on').toLowerCase() !== 'off';
   const apiLimiter = new RateLimiter(600, 60_000, db);
   const embedLimiter = new RateLimiter(120, 60_000, db);
+  /**
+   * Kabar pembayaran: publik, jadi dibatasi laju. Longgar karena penyedia mengirim ulang
+   * kabar yang belum dijawab, dan membatasi terlalu ketat berarti pembayaran sah tertahan.
+   */
+  const webhookLimiter = new RateLimiter(120, 60_000, db);
   const idempotency = new IdempotencyStore(db);
 
   /* ================= Publik: kesehatan & autentikasi ================= */
@@ -298,6 +316,91 @@ export function createApp(options: AppOptions = {}): VantikApp {
         token: result.token,
         expiresAt: result.expiresAt,
         deviceRegistered: result.deviceRegistered,
+      });
+    }),
+  );
+
+  /* ----- Masuk lewat SSO (OpenID Connect) -----
+   *
+   * Mati secara bawaan. Seluruh jalur ini hanya hidup bila `VANTIK_OIDC_*` terisi; bila
+   * tidak, `/auth/sso` menjawab `enabled: false` dan layar masuk tidak menampilkan
+   * tombolnya — tidak ada tombol yang mengarah ke kegagalan.
+   */
+  const ssoFlow = new OidcLoginFlow(db, auth, resolveOidcFromEnv());
+
+  // Publik: dipanggil layar masuk sebelum ada sesi. Tidak membocorkan apa pun selain nama
+  // host penyedia — yang memang akan terlihat di bilah alamat begitu pengguna dialihkan.
+  app.get('/api/v1/auth/sso', (_req, res) => {
+    res.json({ enabled: ssoFlow.enabled(), provider: ssoFlow.providerLabel() });
+  });
+
+  app.post(
+    '/api/v1/auth/sso/start',
+    loginLimiter.middleware((req) => `sso-start:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute(async (req, res) => {
+      const body = req.body as { tenantSlug?: string; redirectTo?: string };
+      if (!body.tenantSlug) throw new ValidationError('error.tenant_slug_required');
+
+      const { url } = await ssoFlow.start({ tenantSlug: body.tenantSlug, redirectTo: body.redirectTo ?? null });
+      // URL dikembalikan, BUKAN dijadikan 302: pengalihan pada respons XHR tidak dapat
+      // diikuti peramban, dan klien perlu kesempatan menyimpan keadaannya lebih dulu.
+      res.json({ url });
+    }),
+  );
+
+  /**
+   * Kembali dari penyedia.
+   *
+   * POST, meskipun penyedia mengalihkan lewat GET: atribut perangkat hanya dapat dihitung
+   * di peramban, dan device binding berlaku sama untuk SSO. Halaman callback di aplikasi
+   * web-lah yang menerima pengalihan itu, lalu memanggil endpoint ini dengan `code`,
+   * `state`, dan sidik perangkat.
+   */
+  app.post(
+    '/api/v1/auth/sso/callback',
+    loginLimiter.middleware((req) => `sso-callback:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute(async (req, res) => {
+      const body = req.body as {
+        state?: string;
+        code?: string;
+        fingerprint?: Record<string, unknown>;
+        geo?: { lat: number; lon: number; label?: string };
+      };
+      if (!body.state || !body.code || !body.fingerprint) throw new ValidationError('error.sso_state_invalid');
+
+      const { result, redirectTo } = await ssoFlow.complete({
+        state: body.state,
+        code: body.code,
+        fingerprint: readFingerprint(body.fingerprint, req),
+        ip: clientIp(req),
+        geo: body.geo ?? null,
+      });
+
+      if (result.kind === 'rejected') {
+        res.status(401).json({
+          error: {
+            key: result.reasonKey,
+            recoveryKey: result.recoveryKey ?? null,
+            retryAfter: result.retryAfter ?? null,
+          },
+        });
+        return;
+      }
+      // Jalur SSO tidak menerbitkan tantangan MFA — peran yang mewajibkannya ditahan di
+      // `RequestContext.require()`, bukan di sini. Cabang ini ada supaya perubahan pada
+      // `loginFederated()` di kemudian hari tidak diam-diam mengembalikan bentuk yang
+      // tidak ditangani siapa pun.
+      if (result.kind === 'mfa_required') {
+        res.status(200).json({ mfaRequired: true, challengeToken: result.challengeToken, expiresAt: result.expiresAt });
+        return;
+      }
+
+      issueSessionCookie(res, result.token, result.expiresAt);
+      res.json({
+        token: result.token,
+        expiresAt: result.expiresAt,
+        deviceRegistered: result.deviceRegistered,
+        redirectTo,
       });
     }),
   );
@@ -708,6 +811,33 @@ export function createApp(options: AppOptions = {}): VantikApp {
     res.json({ ok: true });
   });
 
+  /**
+   * Menarik data dari basis datanya, lalu menyerapnya menjadi dataset.
+   *
+   * Query disimpan di konfigurasi koneksi (`options.query`), bukan dikirim pemanggil.
+   * Mengirimkannya per-permintaan berarti siapa pun yang memegang `connection:sync` dapat
+   * menjalankan query pilihannya sendiri terhadap basis data pelanggan — menjadikan modul
+   * ini sebuah konsol SQL, bukan sebuah integrasi. Yang boleh mengubah query adalah orang
+   * yang boleh mengubah koneksinya (`connection:write`).
+   */
+  api.post(
+    '/connections/:id/sync',
+    asyncRoute(async (req, res) => {
+      const ctx = requireContext(req);
+      const datasets = new DatasetService(ctx, new MeteringService(ctx));
+
+      const result = await connectionsOf(req).syncFromSource(req.params.id!, (csv, name) => {
+        datasets.upload({
+          filename: `${name.replace(/[^\w.-]+/g, '-')}.csv`,
+          content: Buffer.from(csv, 'utf8'),
+          name,
+        });
+      });
+
+      res.json(result);
+    }),
+  );
+
   api.get('/connections/:id/history', (req, res) => {
     res.json({ runs: connectionsOf(req).syncHistory(req.params.id!) });
   });
@@ -859,6 +989,19 @@ export function createApp(options: AppOptions = {}): VantikApp {
     res.json(reportsOf(req).renderDocument(req.params.id!));
   });
 
+  /**
+   * Berkas PDF sungguhan.
+   *
+   * Melewati `renderDocument()` yang sama, jadi gerbang klasifikasi dan pencatatan ekspor
+   * berlaku persis sama — rute ini bukan jalan pintas, hanya bentuk keluaran yang berbeda.
+   */
+  api.get('/reports/:id/pdf', (req, res) => {
+    const { filename, bytes } = reportsOf(req).renderPdfDocument(req.params.id!);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(bytes);
+  });
+
   api.get('/dashboards/:id/embed-tokens', (req, res) => {
     res.json({ tokens: embedOf(req).list(req.params.id!), usage: embedOf(req).usageStats(req.params.id!) });
   });
@@ -992,6 +1135,21 @@ export function createApp(options: AppOptions = {}): VantikApp {
   );
   api.get('/twin/maintenance-queue', (req, res) => {
     res.json({ queue: twinOf(req).maintenanceQueue() });
+  });
+
+  /* Kredensial jembatan MQTT — diterbitkan admin, dipakai proses di luar aplikasi. */
+  const ingestTokensOf = (req: Request): IngestTokenService => new IngestTokenService(requireContext(req));
+
+  api.get('/twin/ingest-tokens', (req, res) => {
+    res.json({ tokens: ingestTokensOf(req).list() });
+  });
+  api.post('/twin/ingest-tokens', (req, res) => {
+    // Nilai tokennya ada di respons ini dan tidak pernah lagi di mana pun — yang tersimpan
+    // hanya hash-nya.
+    res.status(201).json(ingestTokensOf(req).create(req.body as never));
+  });
+  api.delete('/twin/ingest-tokens/:id', (req, res) => {
+    res.json(ingestTokensOf(req).revoke(req.params.id!));
   });
   api.post('/twin/assets/:id/tickets', (req, res) => {
     res.status(201).json(twinOf(req).createTicket(req.params.id!, req.body as never));
@@ -1188,13 +1346,19 @@ export function createApp(options: AppOptions = {}): VantikApp {
    * Perpanjangan.
    *
    * Satu-satunya rute tulis yang tetap dapat dipanggil saat ruang kerja terkunci karena
-   * masa berlaku habis — lihat `BillingService.renew()`. Tanpa pengecualian itu, blokir
-   * mengunci pintu keluarnya sendiri.
+   * masa berlaku habis — lihat `BillingService.requestRenewal()`. Tanpa pengecualian itu,
+   * blokir mengunci pintu keluarnya sendiri.
+   *
+   * Yang dikembalikan adalah FAKTUR, bukan langganan yang sudah diperpanjang: pelanggan
+   * tidak dapat menyatakan pembayarannya sendiri. Masa berlaku maju hanya setelah webhook
+   * gateway bertanda tangan atau operator platform mencatat pembayarannya.
    */
-  api.post('/subscription/renew', (req, res) => {
-    const body = req.body as { paymentToken: string; paymentMethodLabel: string };
-    res.json(billingOf(req).renew(body.paymentToken, body.paymentMethodLabel));
-  });
+  api.post(
+    '/subscription/renew',
+    asyncRoute(async (req, res) => {
+      res.json({ invoice: await billingOf(req).requestRenewal() });
+    }),
+  );
   api.get('/invoices', (req, res) => {
     res.json({ invoices: billingOf(req).listInvoices() });
   });
@@ -1226,6 +1390,52 @@ export function createApp(options: AppOptions = {}): VantikApp {
 
   api.get('/tenants/pending', (req, res) => {
     res.json({ registrations: tenants.listPendingRegistrations(requireContext(req)) });
+  });
+
+  /**
+   * Antrean faktur yang menunggu pembayaran, lintas tenant.
+   *
+   * Inilah antrean kerja operator. Tanpa daftar ini, pencatatan pembayaran hanya mungkin
+   * bila seseorang sudah mengetahui nomor fakturnya — dan pembayaran yang tidak tercatat
+   * berarti pelanggan yang sudah transfer tetap terkunci.
+   */
+  api.get('/system/invoices/unpaid', (req, res) => {
+    res.json({ invoices: platformBilling.listUnpaid(requireContext(req)) });
+  });
+
+  /**
+   * Mencatat pembayaran yang benar-benar diterima.
+   *
+   * Butuh `billing:settle`, yang secara eksplisit DITOLAK untuk Super Admin tenant meski ia
+   * memegang `*:*`: pihak yang berutang tidak boleh menjadi pihak yang menyatakan utangnya
+   * lunas. Nomor referensi wajib, supaya pencatatannya dapat dicocokkan dengan mutasi
+   * rekening dan ditinjau kemudian.
+   */
+  api.post('/system/invoices/:id/payment', (req, res) => {
+    const ctx = requireContext(req);
+    const body = req.body as { reference?: string; methodLabel?: string };
+    const invoice = platformBilling.recordPayment(ctx, req.params.id!, {
+      reference: String(body.reference ?? ''),
+      methodLabel: String(body.methodLabel ?? ''),
+    });
+
+    // Pelanggan diberi tahu bahwa ruang kerjanya sudah terbuka. Tanpa kabar ini ia harus
+    // menebak apakah transfernya sudah diterima, dan menebak berarti menghubungi dukungan.
+    const contact = tenants.registrationContact(invoice.tenant_id);
+    if (contact) {
+      outbox.enqueue({
+        tenantId: invoice.tenant_id,
+        purpose: 'payment_recorded',
+        channel: 'email',
+        recipient: contact.email,
+        subject: `[Vantik] Pembayaran diterima — ${contact.tenantName}`,
+        body:
+          `Pembayaran untuk faktur ${invoice.number} sudah tercatat.\n\n` +
+          `Ruang kerja aktif sampai ${invoice.period_end.slice(0, 10)}.`,
+      });
+    }
+
+    res.json({ invoice });
   });
 
   /**
@@ -1482,22 +1692,122 @@ export function createApp(options: AppOptions = {}): VantikApp {
   app.use('/api/v1', api);
 
   /* --- Webhook payment gateway (tanda tangan diverifikasi) --- */
+  /**
+   * Kabar pembayaran dari payment gateway. TANPA sesi — dan itu bukan kelalaian.
+   *
+   * Sebelumnya rute ini berada di balik `authenticate`, sehingga setiap kabar dijawab 401:
+   * jalurnya terbaca benar di kode tetapi tidak pernah dapat dipanggil penyedia mana pun,
+   * karena payment gateway tidak punya sesi pengguna. Yang membuktikan keaslian pesan adalah
+   * TANDA TANGANNYA — token callback Xendit, hash Midtrans, atau HMAC generik — dan
+   * verifikasi itulah otentikasinya.
+   *
+   * Dibatasi laju per alamat IP: rute ini publik, dan tanpa batas ia menjadi cara murah
+   * memaksa server menghitung tanda tangan berulang kali.
+   */
   app.post(
     '/webhooks/payment',
-    authenticate(deps),
+    webhookLimiter.middleware((req) => `payment-webhook:${clientIp(req) ?? 'unknown'}`),
     asyncRoute((req, res) => {
-      const ctx = requireContext(req);
-      const billing = new BillingService(ctx, new MeteringService(ctx));
-      const secret = process.env.VANTIK_PAYMENT_WEBHOOK_SECRET ?? '';
-      const result = billing.handleGatewayWebhook(
+      const result = platformBilling.applyProviderCallback(
         req.rawBodyText ?? '',
-        String(req.headers['x-signature'] ?? ''),
-        secret,
+        req.headers as Record<string, string | undefined>,
+        {
+          gateway: resolveGatewayFromEnv(),
+          hmacSecret: process.env.VANTIK_PAYMENT_WEBHOOK_SECRET ?? '',
+          ip: clientIp(req),
+        },
       );
       res.status(result.accepted ? 200 : 400).json(result);
     }),
   );
 
+  /**
+   * Pembacaan sensor dari jembatan MQTT. TANPA sesi, dengan alasan yang sama seperti di
+   * atas: jembatan berjalan tanpa orang di depannya, tidak dapat menjawab tantangan MFA,
+   * dan tidak boleh memakai akun manusia yang sesinya akan saling menendang.
+   *
+   * Otentikasinya adalah token ingest per-tenant di header. Yang dibawanya hanya izin
+   * `twin:ingest` — tidak dapat membaca dasbor, tidak dapat melihat aset. Perangkat di
+   * lantai pabrik adalah yang paling mudah diambil orang.
+   *
+   * Batasnya longgar karena satu pabrik dapat mengirim ratusan pembacaan per menit, tetapi
+   * tetap ada: tanpa batas, satu jembatan yang rusak dapat mengisi disk sendirian.
+   */
+  const ingestLimiter = new RateLimiter(600, 60_000, db);
+
+  app.post(
+    '/ingest/v1/twin/readings',
+    ingestLimiter.middleware((req) => `ingest:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute(async (req, res) => {
+      const header = req.headers['x-vantik-ingest-token'];
+      const context = contextFromIngestToken(
+        db,
+        audit,
+        Array.isArray(header) ? (header[0] ?? '') : (header ?? ''),
+        clientIp(req),
+      );
+
+      const body = req.body as {
+        readings?: Array<{ assetCode: string; sensorCode: string; value: number; observedAt?: string }>;
+        assetCode?: string;
+        sensorCode?: string;
+        value?: number;
+        observedAt?: string;
+      };
+
+      /**
+       * Menerima satu pembacaan ATAU sekumpulan.
+       *
+       * Berkelompok bukan kemewahan: satu pabrik dengan lima puluh sensor yang melapor
+       * tiap detik menghasilkan lima puluh percakapan HTTP per detik pada hosting yang
+       * memang tidak dibuat untuk itu.
+       */
+      const readings = body.readings ?? [
+        {
+          assetCode: String(body.assetCode ?? ''),
+          sensorCode: String(body.sensorCode ?? ''),
+          value: Number(body.value),
+          observedAt: body.observedAt,
+        },
+      ];
+      if (readings.length === 0 || readings.length > 500) throw new ValidationError('error.ingest_batch_invalid');
+
+      const twin = new DigitalTwinService(context);
+      const accepted: Array<{ assetCode: string; sensorCode: string; status: string; healthScore: number }> = [];
+      const rejected: Array<{ assetCode: string; sensorCode: string; reason: string }> = [];
+
+      for (const reading of readings) {
+        /**
+         * Satu pembacaan yang buruk TIDAK menggugurkan seluruh kelompok.
+         *
+         * Jembatan mengirim apa pun yang ada di broker, termasuk topik dari sensor yang
+         * belum didaftarkan sebagai aset. Menolak seluruh kelompok karena satu topik asing
+         * berarti kehilangan empat puluh sembilan pembacaan yang sah — dan jembatan akan
+         * mengirim ulang kelompok yang sama, gagal lagi, selamanya.
+         */
+        try {
+          if (!Number.isFinite(reading.value)) throw new ValidationError('error.ingest_value_invalid');
+          const result = await twin.ingestReading({
+            assetCode: String(reading.assetCode ?? ''),
+            sensorCode: String(reading.sensorCode ?? ''),
+            value: Number(reading.value),
+            observedAt: reading.observedAt,
+          });
+          accepted.push({ assetCode: reading.assetCode, sensorCode: reading.sensorCode, ...result });
+        } catch (error) {
+          rejected.push({
+            assetCode: String(reading.assetCode ?? ''),
+            sensorCode: String(reading.sensorCode ?? ''),
+            reason: error instanceof AppError ? error.messageKey : 'error.internal',
+          });
+        }
+      }
+
+      // 200 meski sebagian ditolak: jembatan perlu tahu mana yang tidak sampai, dan status
+      // gagal akan membuatnya mengirim ulang yang sudah berhasil.
+      res.json({ accepted: accepted.length, rejected });
+    }),
+  );
 
   /* ================= Penjadwal (PRD 6.4 & 6.16) ================= */
 

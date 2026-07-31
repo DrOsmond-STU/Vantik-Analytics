@@ -24,6 +24,7 @@ aturannya dimatikan.
 |---|---|---|
 | `js/insecure-randomness` | 6 | OTP pemindahan perangkat memakai `randomInt`; bagian acak `newId()` memakai `randomBytes`. OTP adalah faktor autentikasi dan `Math.random()` dapat diprediksi. |
 | `js/polynomial-redos` | 4 | Panjang User-Agent, daftar font, dan pertanyaan AI dibatasi sebelum menyentuh regex; formula KPI ditolak bila melebihi batas. |
+| `js/regex-injection` | 1 | `r:id` dari berkas `.xlsx` yang diunggah disisipkan ke dalam `new RegExp(...)`. Kini relationship ditelusuri dan `Id`-nya dibandingkan sebagai string. Diperiksa `TC-XLS-20`: masukan yang sama membuat implementasi lama berjalan lebih dari 20 detik, yang baru selesai di bawah satu detik. |
 
 Rinciannya ada di riwayat commit, bukan diringkas ulang di sini.
 
@@ -97,6 +98,39 @@ batas itu sudah ditegakkan **di hulu** sebelum mencapai loop:
 *Yang akan mengubah keputusan ini:* menambah jalur yang memberi pengguna kendali langsung
 atas ukuran iterasi tanpa validasi — mis. parameter `limit` atau `iterations` baru yang
 diteruskan mentah ke perhitungan. Penambahan seperti itu wajib membawa validasi sendiri.
+
+### `js/weak-cryptographic-algorithm` & `js/insufficient-password-hash` — 4 temuan
+
+**`services/src/data-platform-service/drivers.ts`** (MD5 pada baris ~246, SHA-1 pada
+baris ~304) — TIDAK DAPAT DIPERBAIKI DI SINI.
+
+Keduanya bukan pilihan. Ini **jabat tangan protokol basis data**, dan algoritmenya
+ditentukan server di seberang, bukan oleh kode ini:
+
+| Lokasi | Algoritme | Ditentukan oleh |
+|---|---|---|
+| Jawaban `AuthenticationMD5Password` PostgreSQL | `md5(md5(password + user) + salt)` | PostgreSQL protokol v3, pesan tipe `p` |
+| `mysql_native_password` MySQL | `SHA1(pw) XOR SHA1(salt + SHA1(SHA1(pw)))` | MySQL protokol v10 |
+
+Menggantinya dengan algoritme yang lebih kuat berarti mengirim byte yang tidak dimengerti
+server, dan jabat tangannya gagal. Yang dapat dipilih hanyalah **tidak mendukung server
+yang memintanya** — dan itu berarti memutus pelanggan yang basis datanya belum
+dikonfigurasi ulang, demi ketahanan sebuah hash yang tidak pernah kami simpan.
+
+Yang perlu ditegaskan tentang batas dampaknya: **tidak satu pun dari hash ini adalah
+penyimpanan kata sandi.** Keduanya nilai sekali pakai yang dihitung dari salt yang dikirim
+server pada koneksi itu saja, lalu dibuang. Kata sandi pengguna platform ini disimpan
+dengan `scrypt` (`services/src/platform/crypto.ts`) — itulah yang dimaksud
+`js/insufficient-password-hash`, dan di sanalah aturan itu berlaku benar.
+
+Kredensial Koneksi Eksternal sendiri disimpan terenkripsi di berkas vault terpisah
+(SECURITY.md Bagian 6), tidak di-hash.
+
+*Yang akan mengubah keputusan ini:* PostgreSQL sudah menawarkan SCRAM-SHA-256 dan
+**itulah yang dipakai** bila server memintanya — jalur MD5 hanya dipakai bila server
+memaksa. Bila suatu saat dapat dipastikan seluruh pelanggan memakai server yang mendukung
+SCRAM dan `caching_sha2_password`, jalur lama dapat dihapus. Sampai itu terbukti, menghapusnya
+berarti memutus koneksi yang berfungsi.
 
 ---
 

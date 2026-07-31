@@ -7,6 +7,7 @@
  * designer-service internal atau layanan lain.
  */
 import { newId, nowIso, type Db } from '../platform/db.ts';
+import { renderPdf } from './pdf.ts';
 import { generateToken, hashToken } from '../platform/crypto.ts';
 import { ConflictError, ForbiddenError, NotFoundError, RateLimitedError, ValidationError } from '../platform/errors.ts';
 import type { RequestContext } from '../platform/context.ts';
@@ -329,6 +330,39 @@ export class ReportService {
    * Menyiapkan dokumen untuk ekspor. Hasil layar dan hasil cetak dibangun dari
    * struktur yang SAMA agar identik (PRD 6.4).
    */
+  /**
+   * Laporan menjadi berkas PDF.
+   *
+   * Memakai `renderDocument()` apa adanya, termasuk seluruh gerbangnya: klasifikasi
+   * `restricted` tetap menuntut persetujuan Data Steward, dan ekspornya tetap tercatat.
+   * Jalur baru yang melewati pemeriksaan itu akan menjadi pintu belakang yang tampak
+   * seperti fitur.
+   */
+  renderPdfDocument(reportId: string): { filename: string; bytes: Buffer } {
+    const doc = this.renderDocument(reportId);
+    const report = doc.report as {
+      name: string;
+      page_size?: string;
+      orientation?: string;
+      watermark?: string | null;
+      classification?: string;
+    };
+
+    const bytes = renderPdf({
+      title: report.name,
+      pageSize: report.page_size ?? 'A4',
+      orientation: report.orientation ?? 'portrait',
+      // Klasifikasi ikut menjadi tanda air bila laporannya tidak bertanda air sendiri:
+      // berkas yang beredar di luar sistem perlu membawa penandanya.
+      watermark: report.watermark ?? (report.classification === 'restricted' ? 'RESTRICTED' : null),
+      blocks: doc.blocks,
+      footer: doc.attribution.show ? doc.attribution.text : '',
+    });
+
+    const safeName = report.name.replace(/[^A-Za-z0-9-_ ]+/g, '').trim().replace(/\s+/g, '-') || 'laporan';
+    return { filename: `${safeName}.pdf`, bytes };
+  }
+
   renderDocument(reportId: string): {
     report: Record<string, unknown>;
     blocks: ReportBlock[];

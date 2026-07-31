@@ -269,7 +269,33 @@ export function planPrices(plan: PlanDefinition): Record<BillingCycle, number> {
  * Pesan "akses ditolak" yang sama untuk keduanya membuat pelanggan menunggu bantuan
  * padahal tombol perpanjang ada di layarnya (SECURITY.md 17.4).
  */
-export type ReadOnlyReason = 'subscription_expired' | 'tenant_status' | null;
+export type ReadOnlyReason = 'subscription_unpaid' | 'subscription_expired' | 'tenant_status' | null;
+
+/**
+ * Lama uji coba gratis untuk tenant baru, dalam HARI. `0` mematikannya.
+ *
+ * Bawaannya NOL — tidak ada uji coba gratis. Itu keputusan komersial, dan disebutkan di
+ * sini karena kebalikannya mudah menjadi kerugian yang tidak terlihat: pendaftaran mandiri
+ * yang menghadiahkan masa pakai penuh membuat satu orang dapat memakai platform tanpa
+ * batas hanya dengan mendaftar ulang memakai alamat email baru. Persetujuan admin memang
+ * menahannya, tetapi itu memindahkan beban ke manusia yang harus menebak mana pendaftar
+ * sungguhan — dan menebak setiap hari.
+ *
+ * Operator yang MEMANG ingin menawarkan uji coba mengisi `VANTIK_TRIAL_DAYS`. Pemanggil
+ * yang menyebut `trialDays` secara eksplisit (seed data contoh, alat operator) tidak
+ * terpengaruh nilai ini.
+ */
+export const DEFAULT_TRIAL_DAYS = 0;
+
+export function resolveTrialDays(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.VANTIK_TRIAL_DAYS ?? '').trim();
+  if (raw === '') return DEFAULT_TRIAL_DAYS;
+  const parsed = Number(raw);
+  // Nilai yang tidak dapat dibaca sebagai angka non-negatif DIABAIKAN, bukan menjadi NaN
+  // hari: salah ketik di `.env` tidak boleh berarti "uji coba selama NaN".
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_TRIAL_DAYS;
+  return Math.floor(parsed);
+}
 
 /** Feature flag efektif satu tenant. */
 export class FeatureFlags {

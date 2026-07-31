@@ -220,9 +220,15 @@ export class DigitalTwinService {
   }
 
   /**
-   * Menerima pembacaan sensor (dari MQTT gateway atau Koneksi Eksternal 6.12).
+   * Menerima pembacaan sensor (dari jembatan MQTT atau Koneksi Eksternal 6.12).
    * Penyimpangan melewati ambang memicu notifikasi melalui Alert Center (6.16) —
    * bukan jalur notifikasi terpisah.
+   *
+   * `twin:ingest` dipisahkan dari `twin:read` dengan sengaja. Pembacaan sensor menggerakkan
+   * skor kesehatan aset dan memicu notifikasi ambang batas; membiarkan setiap orang yang
+   * boleh MELIHAT lantai pabrik juga MENULIS ke sana berarti siapa pun yang punya sesi
+   * dapat membuat alarm palsu — atau, lebih buruk, menenggelamkan alarm yang benar di
+   * antara pembacaan karangan.
    */
   async ingestReading(input: {
     assetCode: string;
@@ -230,6 +236,9 @@ export class DigitalTwinService {
     value: number;
     observedAt?: string;
   }): Promise<{ status: string; healthScore: number }> {
+    this.ctx.require('twin:ingest', { module: 'Digital Twin' });
+    this.ctx.requireWritable();
+
     const asset = this.ctx.db.get<AssetRecord>('assets', { code: input.assetCode });
     if (!asset) throw new NotFoundError();
 

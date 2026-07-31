@@ -281,6 +281,87 @@ export class AuthService {
     });
   }
 
+  /**
+   * Masuk lewat identitas terfederasi (OIDC), setelah token penyedia diverifikasi.
+   *
+   * Alamat email yang masuk ke sini WAJIB sudah dibuktikan terverifikasi oleh pemanggil —
+   * lihat `trustedEmail()`. Modul ini tidak dapat memeriksanya lagi, jadi kontraknya
+   * dinyatakan di sini: yang lewat jalur ini setara dengan kata sandi yang benar.
+   *
+   * TIDAK membuat pengguna baru. Akun harus sudah ada dan diberi peran oleh administrator.
+   * Pembuatan otomatis akan berarti siapa pun yang punya alamat di domain yang diizinkan
+   * dapat menciptakan akun di ruang kerja orang lain — dan penyedia identitas publik
+   * membuat "domain yang diizinkan" mudah keliru diisi.
+   *
+   * Gerbang lain tetap berlaku persis sama: tenant yang menunggu persetujuan, akun yang
+   * dinonaktifkan, device binding, dan sesi tunggal. MFA per peran juga tetap berlaku —
+   * ditegakkan di `RequestContext.require()`, jadi peran yang mewajibkannya tidak menjadi
+   * berwenang hanya karena masuk lewat SSO.
+   */
+  loginFederated(input: {
+    tenantSlug: string;
+    email: string;
+    provider: string;
+    fingerprint: FingerprintComponents;
+    ip?: string | null;
+    geo?: { lat: number; lon: number; label?: string } | null;
+  }): LoginResult {
+    const at = nowIso();
+    const email = input.email.trim().toLowerCase();
+
+    const tenant = this.db
+      .prepare('SELECT id FROM tenants WHERE slug = ? AND deleted_at IS NULL')
+      .get(input.tenantSlug) as { id: string } | undefined;
+    if (!tenant) {
+      // Jawaban yang sama dengan akun tidak ditemukan: membedakannya menjadikan halaman ini
+      // alat memetakan tenant mana yang ada.
+      return { kind: 'rejected', reasonKey: 'error.invalid_credentials' };
+    }
+
+    const approval = this.tenantApproval(tenant.id);
+    if (approval && approval.approval_status !== 'approved') {
+      return approval.approval_status === 'rejected'
+        ? { kind: 'rejected', reasonKey: 'error.registration_rejected', recoveryKey: 'recovery.contact_admin' }
+        : {
+            kind: 'rejected',
+            reasonKey: 'error.registration_pending_approval',
+            recoveryKey: 'recovery.wait_for_approval',
+          };
+    }
+
+    const user = this.db
+      .prepare('SELECT * FROM system_user WHERE tenant_id = ? AND email = ?')
+      .get(tenant.id, email) as UserRow | undefined;
+    if (!user || user.status !== 'active') {
+      this.recordAttempt(tenant.id, email, input.ip, 'federated_unknown_user', input.geo);
+      return { kind: 'rejected', reasonKey: 'error.invalid_credentials' };
+    }
+
+    const deviceOutcome = this.resolveDevice(user, input.fingerprint, input.ip ?? null);
+    if (deviceOutcome.kind === 'rejected') {
+      this.recordAttempt(user.tenant_id, email, input.ip, 'device_rejected', input.geo);
+      return deviceOutcome;
+    }
+
+    this.revokeSessionsForUser(user.tenant_id, user.id, 'superseded_by_new_login');
+
+    this.audit.record({
+      tenantId: user.tenant_id,
+      actorUserId: user.id,
+      actorLabel: email,
+      actorIp: input.ip ?? null,
+      action: 'auth.login_federated',
+      module: 'Perangkat & Sesi',
+      objectType: 'session',
+      severity: 'notice',
+      detail: { provider: input.provider },
+    });
+
+    return this.issueSession(user, email, deviceOutcome, input.ip ?? null, input.geo ?? null, at, {
+      mfaUsed: null,
+    });
+  }
+
   /* ---------------------------------------------------------------- */
   /* Penerbitan sesi                                                   */
   /* ---------------------------------------------------------------- */

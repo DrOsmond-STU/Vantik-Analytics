@@ -1155,6 +1155,101 @@ const REMAINING_MAIN_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_tenants_approval ON tenants(approval_status);
     `,
   },
+  {
+    id: '0015_paid_activation',
+    sql: `
+      -- Kapan langganan PERTAMA kali benar-benar dibayar.
+      --
+      -- Diperlukan untuk membedakan dua keadaan yang sama-sama "tidak boleh menulis"
+      -- tetapi butuh penjelasan yang sangat berbeda kepada pengguna:
+      --
+      --   NULL  = belum pernah aktif. Ruang kerja baru yang menunggu pembayaran pertama.
+      --           Mengatakan "masa berlaku habis" kepada pelanggan yang belum pernah
+      --           punya masa berlaku adalah pesan yang menyesatkan, dan pengguna akan
+      --           mencari tombol perpanjang untuk sesuatu yang belum pernah ada.
+      --   terisi = pernah aktif lalu kedaluwarsa. Inilah perpanjangan yang sesungguhnya.
+      --
+      -- Backfill DISENGAJA memakai created_at hanya untuk langganan yang berstatus
+      -- 'active': mereka sudah berjalan sebelum kolom ini ada, dan menandainya "belum
+      -- pernah aktif" akan membuat pelanggan lama tiba-tiba dianggap belum bayar.
+      -- Baris 'trialing' dibiarkan NULL — uji coba memang belum pernah dibayar.
+      ALTER TABLE subscriptions ADD COLUMN activated_at TEXT;
+      UPDATE subscriptions SET activated_at = created_at WHERE status = 'active';
+    `,
+  },
+  {
+    id: '0016_payment_link',
+    sql: `
+      -- Tautan pembayaran dari payment gateway.
+      --
+      -- Disimpan di faktur, bukan dibuat ulang setiap kali layar dibuka: memanggil gateway
+      -- pada setiap pembacaan berarti satu tagihan menghasilkan banyak tagihan di sisi
+      -- penyedia, dan pelanggan melihat nomor pembayaran yang berubah-ubah.
+      --
+      -- Kolom pay_url BUKAN rahasia — ia memang untuk dibuka pelanggan. Yang penting ia
+      -- tidak dapat diterka, karena siapa pun yang memilikinya dapat membayar tagihan itu;
+      -- dibayari orang lain bukan kerugian bagi siapa pun.
+      ALTER TABLE invoices ADD COLUMN pay_url TEXT;
+      ALTER TABLE invoices ADD COLUMN pay_expires_at TEXT;
+      -- Alasan gateway gagal membuat tagihan, bila gagal. Diisi supaya operator tahu
+      -- mengapa sebuah faktur tidak punya tautan bayar, alih-alih menebak.
+      ALTER TABLE invoices ADD COLUMN charge_error TEXT;
+    `,
+  },
+  {
+    id: '0017_oidc_login_state',
+    sql: `
+      -- Keadaan satu percobaan masuk lewat SSO, antara pengalihan ke penyedia dan
+      -- kembalinya pengguna.
+      --
+      -- Di tabel, bukan di memori: Passenger menjalankan beberapa proses dan me-recycle
+      -- saat idle. Keadaan di memori berarti pengguna yang dialihkan oleh proses A lalu
+      -- kembali ke proses B akan ditolak dengan "state tidak dikenal" — kegagalan yang
+      -- muncul sesekali dan mustahil ditelusuri.
+      --
+      -- Baris ini adalah kredensial jangka pendek: code_verifier di dalamnya cukup untuk
+      -- menukar kode otorisasi menjadi token. Karena itu dihapus segera setelah dipakai
+      -- (sekali pakai, menutup pemutaran ulang) dan disapu saat kedaluwarsa.
+      CREATE TABLE oidc_login_state (
+        state         TEXT PRIMARY KEY,
+        nonce         TEXT NOT NULL,
+        code_verifier TEXT NOT NULL,
+        tenant_slug   TEXT NOT NULL,
+        redirect_to   TEXT,
+        created_at    TEXT NOT NULL,
+        expires_at    TEXT NOT NULL
+      );
+      CREATE INDEX idx_oidc_state_expiry ON oidc_login_state(expires_at);
+    `,
+  },
+  {
+    id: '0018_ingest_tokens',
+    sql: `
+      -- Kredensial mesin untuk mengirim pembacaan sensor.
+      --
+      -- BUKAN sesi pengguna. Jembatan MQTT berjalan tanpa orang di depannya: ia tidak
+      -- dapat menjawab tantangan MFA, dan memakai akun manusia berarti sesi tunggal
+      -- saling menendang setiap kali jembatannya menyambung ulang.
+      --
+      -- Token diikat pada SATU tenant. Satu token global untuk semua tenant akan berarti
+      -- jembatan milik satu pelanggan dapat menulis ke ruang kerja pelanggan lain.
+      --
+      -- Yang disimpan hanya hash-nya, sama seperti kata sandi dan token sesi: basis data
+      -- yang bocor tidak boleh berisi kredensial yang langsung dapat dipakai.
+      CREATE TABLE ingest_tokens (
+        id            TEXT PRIMARY KEY,
+        tenant_id     TEXT NOT NULL REFERENCES tenants(id),
+        label         TEXT NOT NULL,
+        token_hash    TEXT NOT NULL UNIQUE,
+        created_at    TEXT NOT NULL,
+        created_by    TEXT,
+        last_used_at  TEXT,
+        revoked_at    TEXT,
+        revoked_by    TEXT
+      );
+      CREATE INDEX idx_ingest_tokens_tenant ON ingest_tokens(tenant_id, revoked_at);
+    `,
+  },
 ];
 
 /**

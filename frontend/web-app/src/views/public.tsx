@@ -16,6 +16,7 @@ import {
   type PublicPlan,
   type PublicPlans,
 } from '../lib/api.ts';
+import { collectFingerprint } from '../lib/fingerprint.ts';
 import { Card, Field } from '../components/primitives.tsx';
 import { NAV_GROUPS } from '../app/navigation.ts';
 
@@ -609,6 +610,93 @@ export function ResetPasswordView(): JSX.Element {
                 {busy ? t('ui.loading') : t('action.reset_password')}
               </button>
             </form>
+          )}
+        </Card>
+      </section>
+    </PublicShell>
+  );
+}
+
+/* ================= Kembali dari penyedia SSO ================= */
+
+/**
+ * Membaca `code` dan `state` dari alamat.
+ *
+ * Dikenali dari ADANYA kedua parameter, bukan dari lintasan tertentu: `redirect_uri`
+ * diisi operator dan didaftarkan di sisi penyedia, jadi lintasannya tidak dapat
+ * ditebak dari sini. Keduanya bersama-sama tidak dipakai halaman lain mana pun.
+ */
+export function readSsoCallback(search: string): { code: string; state: string } | null {
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  const code = params.get('code');
+  const state = params.get('state');
+  if (!code || !state) return null;
+  return { code, state };
+}
+
+/**
+ * Halaman singgah setelah penyedia mengembalikan pengguna.
+ *
+ * Tugasnya satu: menghitung sidik perangkat — yang hanya dapat dilakukan di peramban —
+ * lalu menukar `code` menjadi sesi. Pengguna tidak diminta melakukan apa pun di sini.
+ */
+export function SsoCallbackView({ code, state }: { code: string; state: string }): JSX.Element {
+  const { t, refreshSession } = useApp();
+  const [errorKey, setErrorKey] = useState<string | null>(null);
+  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await api.ssoCallback({ code, state, fingerprint: collectFingerprint() });
+        if (cancelled) return;
+        /**
+         * Kode otorisasi dibuang dari alamat SEBELUM sesi dimuat.
+         *
+         * Tanpa ini, menyegarkan halaman mengirim ulang kode yang sudah dipakai dan
+         * pengguna disambut pesan kegagalan tepat setelah berhasil masuk. Alamatnya juga
+         * tersimpan di riwayat peramban dan mudah tersalin ke orang lain.
+         */
+        window.history.replaceState(null, '', result.redirectTo ?? window.location.pathname);
+        await refreshSession();
+      } catch (error) {
+        if (cancelled) return;
+        setErrorKey(error instanceof ApiError ? error.key : 'error.internal');
+        setRecoveryKey(error instanceof ApiError ? (error.recoveryKey ?? 'recovery.sso_start_again') : null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [code, state, refreshSession]);
+
+  return (
+    <PublicShell>
+      <section className="public-form">
+        <Card className="login-card">
+          {errorKey ? (
+            <>
+              <div className="note warn">
+                <div>{t(errorKey)}</div>
+                {recoveryKey && <div style={{ marginTop: 6 }}>{t(recoveryKey)}</div>}
+              </div>
+              <button
+                type="button"
+                className="btn primary"
+                style={{ width: '100%', justifyContent: 'center' }}
+                onClick={() => {
+                  // Alamat dibersihkan lebih dulu; membiarkan `code` di sana berarti
+                  // percobaan berikutnya mendarat kembali di halaman ini.
+                  window.history.replaceState(null, '', window.location.pathname);
+                  goTo('login');
+                }}
+              >
+                {t('action.login')}
+              </button>
+            </>
+          ) : (
+            <p>{t('ui.sso_finishing')}</p>
           )}
         </Card>
       </section>

@@ -115,6 +115,37 @@ export const api = {
     return result;
   },
 
+  /* ---------------- Masuk lewat SSO ---------------- */
+
+  /**
+   * Apakah SSO menyala pada pemasangan ini.
+   *
+   * Ditanyakan sebelum tombolnya digambar. Tombol "Masuk dengan SSO" yang pasti gagal
+   * lebih buruk daripada tidak ada tombol sama sekali.
+   */
+  ssoStatus: (): Promise<{ enabled: boolean; provider: string | null }> =>
+    request<{ enabled: boolean; provider: string | null }>('/auth/sso'),
+
+  /** Meminta URL penyedia. Peramban yang mengalihkan, bukan respons ini. */
+  ssoStart: (input: { tenantSlug: string; redirectTo?: string }): Promise<{ url: string }> =>
+    request<{ url: string }>('/auth/sso/start', { method: 'POST', body: JSON.stringify(input) }),
+
+  /** Menyelesaikan proses masuk setelah penyedia mengembalikan `code` dan `state`. */
+  async ssoCallback(input: {
+    state: string;
+    code: string;
+    fingerprint: FingerprintComponents;
+  }): Promise<{ token: string; expiresAt: string; deviceRegistered: boolean; redirectTo: string | null }> {
+    const result = await request<{
+      token: string;
+      expiresAt: string;
+      deviceRegistered: boolean;
+      redirectTo: string | null;
+    }>('/auth/sso/callback', { method: 'POST', body: JSON.stringify(input) });
+    setToken(result.token);
+    return result;
+  },
+
   /* ---------------- Permukaan publik (tanpa sesi) ---------------- */
 
   /** Katalog paket untuk halaman depan & halaman berlangganan. */
@@ -242,7 +273,7 @@ export interface Session {
     plan: string;
     readOnly: boolean;
     /** Mengapa baca-saja — menentukan langkah pemulihan yang ditawarkan antarmuka. */
-    readOnlyReason: 'subscription_expired' | 'tenant_status' | null;
+    readOnlyReason: 'subscription_unpaid' | 'subscription_expired' | 'tenant_status' | null;
     expiresAt: string | null;
     modules: Record<string, boolean>;
     quotas: Record<string, number>;

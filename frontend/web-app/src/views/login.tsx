@@ -5,7 +5,7 @@
  * ("akun ini terikat perangkat lain — ajukan pemindahan ke Admin"), bukan sekadar
  * "akses ditolak".
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../app/AppContext.tsx';
 import { api, ApiError } from '../lib/api.ts';
 import { collectFingerprint } from '../lib/fingerprint.ts';
@@ -23,6 +23,44 @@ export function LoginView(): JSX.Element {
   /** Terisi bila server meminta faktor kedua; formulir berganti ke langkah kode. */
   const [challengeToken, setChallengeToken] = useState<string | null>(null);
   const [code, setCode] = useState('');
+  /**
+   * Ditanyakan ke server, bukan diasumsikan.
+   *
+   * SSO mati secara bawaan; tombol yang selalu tampil akan menjadi tombol yang selalu
+   * gagal pada mayoritas pemasangan. `null` berarti "belum tahu" — tidak menggambar
+   * apa pun sampai jawabannya datang.
+   */
+  const [sso, setSso] = useState<{ enabled: boolean; provider: string | null } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .ssoStatus()
+      .then((status) => {
+        if (!cancelled) setSso(status);
+      })
+      // Kegagalan di sini tidak boleh merusak layar masuk biasa: tanpa jawaban, tombolnya
+      // sekadar tidak muncul.
+      .catch(() => {
+        if (!cancelled) setSso({ enabled: false, provider: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function startSso(): Promise<void> {
+    setBusy(true);
+    setErrorKey(null);
+    setRecoveryKey(null);
+    try {
+      const { url } = await api.ssoStart({ tenantSlug: tenantSlug.trim() });
+      window.location.href = url;
+    } catch (error) {
+      reportError(error);
+      setBusy(false);
+    }
+  }
 
   function reportError(error: unknown): void {
     if (error instanceof ApiError) {
@@ -163,6 +201,31 @@ export function LoginView(): JSX.Element {
             <button type="submit" className="btn primary" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
               {busy ? t('ui.loading') : t('action.login')}
             </button>
+
+            {/* Hanya digambar bila server menyatakan SSO menyala. Kode organisasi tetap
+                dibutuhkan: penyedia identitas mengatakan SIAPA orangnya, bukan ruang
+                kerja mana yang ia tuju. */}
+            {sso?.enabled && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ textAlign: 'center', color: 'var(--text-600)', fontSize: 12, marginBottom: 8 }}>
+                  {t('ui.sso_or')}
+                </div>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy || tenantSlug.trim() === ''}
+                  onClick={() => void startSso()}
+                  style={{ width: '100%', justifyContent: 'center' }}
+                >
+                  {t('action.login_sso')}
+                </button>
+                {sso.provider && (
+                  <div style={{ textAlign: 'center', color: 'var(--text-600)', fontSize: 11.5, marginTop: 6 }}>
+                    {t('ui.sso_provider', { provider: sso.provider })}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Jalan keluar bagi orang yang tidak dapat masuk. Tanpa ini, layar masuk
                 adalah jalan buntu: satu-satunya pilihan adalah menebak lagi. */}
