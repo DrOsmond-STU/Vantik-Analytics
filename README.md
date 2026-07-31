@@ -138,6 +138,21 @@ berbeda-beda dan dinyatakan jujur di bawah — mengikuti prioritas rilis PRD Bag
 | 7. Administrasi Sistem | Master Pegawai, Otorisasi User, Log Aktivitas, Perangkat & Sesi | Fungsional penuh |
 | 8. Langganan & Billing | Manajemen Tenant, Langganan & Paket, Billing & Faktur, Usage Metering & Kuota | Fungsional; jangka waktu 1/3/6/12 bulan, **penghentian otomatis saat masa berlaku habis** (dihitung dari tanggal pada tiap permintaan, tidak menunggu penjadwal), *payment gateway* lewat webhook terverifikasi tanda tangan |
 
+### Sudah ada, tinggal diisi kredensialnya
+
+Bukan pekerjaan yang tertunda — kodenya lengkap dan teruji; yang kosong hanya nilainya,
+supaya operator mengisinya sendiri tanpa menyunting satu baris kode pun.
+
+- **Pengiriman notifikasi** — email (SMTP), WhatsApp, dan Telegram
+  (`services/src/platform/transports.ts`). Kanal yang belum diisi tidak berpura-pura:
+  statusnya tetap `queued`, dan antreannya terlihat di `GET /api/v1/notifications/outbox` —
+  jadi OTP pemindahan perangkat menunggu di sana sampai SMTP diisi. SMS/Teams/Slack dipasang
+  lewat antarmuka `NotificationTransport` yang sama. Lihat panduan §8.3.
+- **Pembayaran langganan** — Xendit dan Midtrans
+  (`services/src/billing-service/gateway.ts`), menghadirkan QRIS, virtual account, dan
+  e-wallet lewat halaman penyedia. Selama kosong, pembayaran dicatat operator platform.
+  Lihat panduan §8.1g.
+
 ### Yang sengaja belum diimplementasikan
 
 Dinyatakan terbuka, bukan disembunyikan:
@@ -146,13 +161,6 @@ Dinyatakan terbuka, bukan disembunyikan:
   (`error.xlsx_conversion_required`), bukan diam-diam menghasilkan dataset kosong.
 - **Driver koneksi eksternal nyata** — `ConnectionProbe` memvalidasi bentuk konfigurasi;
   implementasi driver PostgreSQL/MySQL/Oracle/REST dipasang lewat antarmuka yang sama.
-- **Kredensial pengiriman notifikasi** — transportnya **sudah ada** untuk email (SMTP),
-  WhatsApp, dan Telegram (`services/src/platform/transports.ts`), tetapi nilainya kosong
-  sampai operator mengisinya di `.env` (lihat panduan pemasangan §8.3). Kanal yang belum
-  diisi tidak berpura-pura: `QueueOnlyTransport` menyatakan `delivers = false`, statusnya
-  tetap `queued`, dan antreannya terlihat di `GET /api/v1/notifications/outbox` — jadi OTP
-  pemindahan perangkat menunggu di sana sampai SMTP diisi. SMS/Teams/Slack dipasang lewat
-  antarmuka `NotificationTransport` yang sama.
 - **SSO SAML/OIDC** — skema & kolom `auth_provider` sudah ada; alur federasi belum. (MFA berbasis TOTP **sudah** ada — lihat tabel kontrol keamanan.)
 - **Ingest MQTT** — Digital Twin menerima pembacaan sensor lewat REST; gateway MQTT belum.
 - **Ekspor PDF biner** — `renderDocument()` mengembalikan struktur dokumen; render PDF
