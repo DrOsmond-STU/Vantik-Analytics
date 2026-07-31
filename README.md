@@ -45,7 +45,7 @@ dilakukan — perilaku yang disengaja (SECURITY.md Bagian 4), bukan kerusakan.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 709 test (662 backend + 47 komponen web)
+npm test              # 711 test (664 backend + 47 komponen web)
 npm run test:coverage # backend dengan ambang cakupan
 npm run test:web      # hanya uji komponen/DOM web app
 ```

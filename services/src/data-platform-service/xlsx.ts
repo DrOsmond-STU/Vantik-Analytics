@@ -308,11 +308,28 @@ export function parseSheet(
 
 /* ================= Berkas ================= */
 
-/** Nama entri lembar pertama menurut urutan di `workbook.xml`, bukan urutan berkas di ZIP. */
+/**
+ * Nama entri lembar pertama menurut urutan di `workbook.xml`, bukan urutan berkas di ZIP.
+ *
+ * Relationship dicari dengan MENELUSURI seluruh entri lalu membandingkan `Id` sebagai
+ * string biasa — bukan dengan menyusun regex yang memuat `firstRid`.
+ *
+ * `firstRid` berasal dari berkas yang diunggah, jadi ia masukan tidak tepercaya. Menyisipkan
+ * nilai itu ke dalam pola regex berarti berkas `.xlsx` yang dirancang khusus dapat
+ * menuliskan polanya sendiri: cukup satu pola yang menyebabkan penelusuran balik berlipat
+ * untuk membuat proses server berputar pada satu unggahan. Perbandingan string tidak punya
+ * perilaku itu sama sekali.
+ */
 function firstSheetPath(workbookXml: string, relsXml: string, names: string[]): string {
   const firstRid = /<sheet\s[^>]*r:id="([^"]+)"/.exec(workbookXml)?.[1];
   if (firstRid) {
-    const target = new RegExp(`<Relationship[^>]*Id="${firstRid}"[^>]*Target="([^"]+)"`).exec(relsXml)?.[1];
+    let target: string | undefined;
+    for (const match of relsXml.matchAll(/<Relationship\b([^>]*)>/g)) {
+      const attrs = match[1] ?? '';
+      if (/\bId="([^"]*)"/.exec(attrs)?.[1] !== firstRid) continue;
+      target = /\bTarget="([^"]*)"/.exec(attrs)?.[1];
+      break;
+    }
     if (target) {
       const clean = target.replace(/^\/?(xl\/)?/, '');
       const candidate = `xl/${clean}`;

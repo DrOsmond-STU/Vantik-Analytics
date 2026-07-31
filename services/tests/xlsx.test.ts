@@ -213,6 +213,47 @@ describe('Pembacaan lembar', () => {
 
 /* ================= Penolakan yang jelas ================= */
 
+describe('Masukan yang dirancang menyerang pembacanya', () => {
+  it('TC-XLS-20 — `r:id` tidak dapat menuliskan pola regex pembacanya sendiri', () => {
+    // `r:id` berasal dari berkas yang diunggah. Sebelumnya nilainya disisipkan langsung
+    // ke dalam `new RegExp(...)`, sehingga berkas yang dirancang khusus dapat menuliskan
+    // polanya sendiri — dan satu pola yang menyebabkan penelusuran balik berlipat cukup
+    // untuk membuat proses server berputar pada satu unggahan.
+    const jahat = '(a+)+$'.repeat(6);
+    const workbook = `<?xml version="1.0"?><workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="${jahat}"/></sheets></workbook>`;
+    const rels = `<?xml version="1.0"?><Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/>${'<Relationship Id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" Type="x" Target="y"/>'.repeat(200)}</Relationships>`;
+
+    const bytes = buildZip([
+      { name: 'xl/workbook.xml', content: workbook },
+      { name: 'xl/_rels/workbook.xml.rels', content: rels },
+      { name: 'xl/worksheets/sheet1.xml', content: '<?xml version="1.0"?><worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Wilayah</t></is></c></row></sheetData></worksheet>' },
+      { name: 'xl/styles.xml', content: STYLES },
+    ]);
+
+    // Selesai cepat, dan jatuh ke lembar bernomor terkecil karena rid-nya tidak cocok.
+    const mulai = Date.now();
+    expect(readXlsxGrid(bytes).rows[0]).toEqual(['Wilayah']);
+    expect(Date.now() - mulai).toBeLessThan(1000);
+  });
+
+  it('TC-XLS-21 — relationship dicocokkan tepat, bukan sebagai bagian dari string lain', () => {
+    // `rId1` tidak boleh cocok dengan `rId10`; kalau iya, lembar yang dibaca bisa lembar
+    // yang salah — kesalahan yang tidak terlihat sebagai kesalahan.
+    const workbook = `<?xml version="1.0"?><workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId10"/></sheets></workbook>`;
+    const rels = `<?xml version="1.0"?><Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId10" Type="worksheet" Target="worksheets/sheet2.xml"/></Relationships>`;
+
+    const bytes = buildZip([
+      { name: 'xl/workbook.xml', content: workbook },
+      { name: 'xl/_rels/workbook.xml.rels', content: rels },
+      { name: 'xl/worksheets/sheet1.xml', content: '<?xml version="1.0"?><worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>SALAH</t></is></c></row></sheetData></worksheet>' },
+      { name: 'xl/worksheets/sheet2.xml', content: '<?xml version="1.0"?><worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>BENAR</t></is></c></row></sheetData></worksheet>' },
+      { name: 'xl/styles.xml', content: STYLES },
+    ]);
+
+    expect(readXlsxGrid(bytes).rows[0]).toEqual(['BENAR']);
+  });
+});
+
 describe('Berkas yang tidak dapat dibaca', () => {
   it('TC-XLS-10 — berkas terenkripsi dikatakan terenkripsi, bukan rusak', () => {
     const buffer = buildZip([{ name: 'xl/workbook.xml', content: WORKBOOK, encrypted: true }]);
