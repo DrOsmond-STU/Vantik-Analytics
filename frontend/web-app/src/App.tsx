@@ -10,7 +10,9 @@ import {
   LandingView,
   ResetPasswordView,
   SignupView,
+  SsoCallbackView,
   publicRouteFromHash,
+  readSsoCallback,
 } from './views/public.tsx';
 import { Icon } from './components/primitives.tsx';
 
@@ -44,6 +46,12 @@ export default function App(): JSX.Element {
   // kata sandi — tidak ada tempat untuk menjelaskan apa produk ini, dan tidak ada jalan
   // bagi orang yang belum punya akun. Formulir masuk kini satu tujuan di antara beberapa.
   if (!session) {
+    // Kembali dari penyedia SSO diperiksa LEBIH DULU: alamatnya membawa `code` dan
+    // `state` di query, bukan di hash, sehingga rute berbasis hash di bawah akan
+    // memperlakukannya sebagai halaman depan dan proses masuk berhenti tanpa jejak.
+    const callback = readSsoCallback(window.location.search);
+    if (callback) return <SsoCallbackView code={callback.code} state={callback.state} />;
+
     switch (publicRouteFromHash(window.location.hash)) {
       case 'login':
         return <LoginView />;

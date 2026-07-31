@@ -706,6 +706,81 @@ Tiga hal yang **tidak** akan dipangkas, dan itu disengaja:
 Lihat apa yang tumbuh, beserta jendela yang sedang berlaku, di
 `GET /api/v1/system/retention` (butuh izin `platform:health`).
 
+## 8.5 Masuk lewat SSO (OpenID Connect) — mati secara bawaan
+
+Cocok bila organisasi sudah memakai Google Workspace, Microsoft Entra ID (Azure AD), Keycloak,
+Authentik, atau penyedia OIDC lain, dan tidak ingin memelihara kata sandi kedua di sini.
+
+**Selama lima variabel di bawah kosong, SSO mati total**: tombol "Masuk dengan SSO" tidak
+digambar sama sekali, dan rutenya menolak dengan alasan terbaca alih-alih 500. Tombol yang
+pasti gagal lebih buruk daripada tidak ada tombol.
+
+| Variabel | Wajib | Isi |
+|---|---|---|
+| `VANTIK_OIDC_ISSUER` | ya | Alamat penyedia, mis. `https://accounts.google.com` atau `https://login.microsoftonline.com/<tenant-id>/v2.0` |
+| `VANTIK_OIDC_CLIENT_ID` | ya | Client ID dari pendaftaran aplikasi di sisi penyedia |
+| `VANTIK_OIDC_CLIENT_SECRET` | ya | Client secret dari pendaftaran yang sama |
+| `VANTIK_OIDC_REDIRECT_URI` | ya | Harus **persis sama** dengan yang didaftarkan di penyedia, mis. `https://analitik.domainanda.id/auth/sso/callback` |
+| `VANTIK_OIDC_ALLOWED_DOMAINS` | tidak | Daftar domain email yang boleh masuk, dipisah koma — mis. `domainanda.id, mitra.co.id`. Kosong berarti domain mana pun diterima |
+
+Setengah terisi **tidak** menyalakannya: bila salah satu dari empat yang wajib kosong, SSO
+tetap dianggap mati.
+
+Setelah diisi, **restart aplikasi** (Setup Node.js App → Restart).
+
+### Yang perlu didaftarkan di sisi penyedia
+
+- **Redirect URI**: nilai `VANTIK_OIDC_REDIRECT_URI` di atas, sama persis termasuk `https://`
+  dan tanpa garis miring tambahan di ujung.
+- **Scope**: `openid email profile`.
+- **Tipe aplikasi**: web (klien rahasia). PKCE dipakai meski begitu — kode otorisasi yang
+  bocor lewat riwayat peramban atau log proxy tidak cukup untuk ditukar menjadi token.
+
+### Empat hal yang perlu diketahui sebelum mengumumkannya ke pengguna
+
+1. **Akun tidak dibuat otomatis.** Pengguna harus sudah ada dan sudah diberi peran oleh
+   admin. Bila tidak, ia ditolak dengan pesan yang sama seperti kredensial salah.
+   Ini disengaja: pembuatan otomatis berarti siapa pun yang punya alamat di domain yang
+   diizinkan dapat menciptakan akun di ruang kerja Anda — dan `VANTIK_OIDC_ALLOWED_DOMAINS`
+   yang keliru diisi terlalu longgar menjadi lubang, bukan sekadar salah ketik.
+2. **Kode organisasi tetap diisi.** Penyedia identitas mengatakan *siapa* orangnya, bukan
+   *ruang kerja mana* yang ia tuju.
+3. **Kata sandi lokal tidak hilang.** SSO adalah cara masuk tambahan. Bila penyedia sedang
+   mati, admin tetap dapat masuk dengan kata sandi — tanpa ini, gangguan di sisi penyedia
+   mengunci seluruh organisasi di luar aplikasinya.
+4. **Gerbang lain berlaku sama persis**: akun nonaktif, ruang kerja yang belum disetujui,
+   ikatan perangkat, sesi tunggal, dan kewajiban MFA per peran. Peran yang mewajibkan
+   verifikasi dua langkah **tidak** menjadi bebas hanya karena masuk lewat SSO.
+
+Email yang **belum terverifikasi** di sisi penyedia ditolak. Penyedia yang membiarkan
+penggunanya menuliskan alamat apa pun di profil akan menjadi cara mengambil alih akun orang
+lain di sini — cukup dengan mengaku beralamat sama.
+
+### Bila gagal
+
+| Yang terlihat pengguna | Artinya |
+|---|---|
+| `error.sso_state_invalid` | Percobaan masuk sudah dipakai, atau dimulai di tab lain. Ulangi dari halaman masuk |
+| `error.sso_state_expired` | Lebih dari 10 menit di halaman penyedia. Ulangi |
+| `error.sso_exchange_failed` | Penyedia menolak menukar kode — biasanya `redirect_uri` atau client secret tidak cocok |
+| `error.sso_token_invalid` | Bukti identitas tidak diterima: tanda tangan, `aud`, `iss`, atau email belum terverifikasi |
+| Kredensial salah | Akunnya belum ada di ruang kerja itu, atau nonaktif |
+
+`error.sso_token_invalid` sengaja tidak menyebutkan bagian mana yang gagal. Alasan
+teknisnya berguna bagi operator — dan sama bergunanya bagi orang yang sedang menyusun token
+palsu, karena ia memberi tahu persis apa yang perlu diperbaiki.
+
+### SAML
+
+**Tidak didukung, dan tidak direncanakan.** SAML membutuhkan penanganan XML beserta
+kanonikalisasi tanda tangannya; pustaka yang melakukannya dengan benar terlalu besar untuk
+dipasang tanpa kompilasi di shared hosting, dan yang menuliskannya sendiri hampir selalu
+salah dengan cara yang tidak terlihat sampai ada yang memalsukan assertion. Penyedia SAML
+yang juga berbicara OIDC — Entra ID, Okta, Keycloak, Google — dapat dipakai lewat jalur
+OIDC di atas.
+
+---
+
 ## 9. Backup
 
 Seluruh keadaan aplikasi ada di tiga berkas dalam `~/vantik-data/`:

@@ -1196,6 +1196,32 @@ const REMAINING_MAIN_MIGRATIONS: readonly Migration[] = [
       ALTER TABLE invoices ADD COLUMN charge_error TEXT;
     `,
   },
+  {
+    id: '0017_oidc_login_state',
+    sql: `
+      -- Keadaan satu percobaan masuk lewat SSO, antara pengalihan ke penyedia dan
+      -- kembalinya pengguna.
+      --
+      -- Di tabel, bukan di memori: Passenger menjalankan beberapa proses dan me-recycle
+      -- saat idle. Keadaan di memori berarti pengguna yang dialihkan oleh proses A lalu
+      -- kembali ke proses B akan ditolak dengan "state tidak dikenal" — kegagalan yang
+      -- muncul sesekali dan mustahil ditelusuri.
+      --
+      -- Baris ini adalah kredensial jangka pendek: code_verifier di dalamnya cukup untuk
+      -- menukar kode otorisasi menjadi token. Karena itu dihapus segera setelah dipakai
+      -- (sekali pakai, menutup pemutaran ulang) dan disapu saat kedaluwarsa.
+      CREATE TABLE oidc_login_state (
+        state         TEXT PRIMARY KEY,
+        nonce         TEXT NOT NULL,
+        code_verifier TEXT NOT NULL,
+        tenant_slug   TEXT NOT NULL,
+        redirect_to   TEXT,
+        created_at    TEXT NOT NULL,
+        expires_at    TEXT NOT NULL
+      );
+      CREATE INDEX idx_oidc_state_expiry ON oidc_login_state(expires_at);
+    `,
+  },
 ];
 
 /**

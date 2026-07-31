@@ -1043,3 +1043,36 @@ describe('Penyajian frontend & proteksi lintasan berkas', () => {
     }
   });
 });
+
+/**
+ * SSO lewat HTTP.
+ *
+ * Yang diuji di sini bukan protokolnya — itu sudah dibuktikan `oidc.test.ts` dan
+ * `oidc-flow.test.ts` — melainkan bahwa rutenya benar-benar terpasang dan bahwa
+ * keadaan bawaannya MATI. Dua kekeliruan yang hanya terlihat di tingkat HTTP: rute
+ * yang lupa dipasang sama sekali, dan rute publik yang tidak sengaja berada di balik
+ * `authenticate()` sehingga menjawab 401 kepada peramban yang belum punya sesi.
+ */
+describe('SSO lewat HTTP', () => {
+  it('TC-E2E-51 — status SSO dapat dibaca TANPA sesi, dan bawaannya mati', async () => {
+    const response = await request(app).get('/api/v1/auth/sso');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ enabled: false, provider: null });
+  });
+
+  it('TC-E2E-52 — memulai SSO yang tidak dikonfigurasi ditolak dengan alasan terbaca', async () => {
+    const response = await request(app).post('/api/v1/auth/sso/start').send({ tenantSlug: 'demo' });
+
+    // 400 dengan kunci pesan, bukan 500: konfigurasi kosong adalah keadaan wajar.
+    expect(response.status).toBe(400);
+    expect(response.body.error.key).toBe('error.sso_not_configured');
+  });
+
+  it('TC-E2E-53 — callback tanpa `code`/`state` ditolak sebelum menyentuh jaringan', async () => {
+    const response = await request(app).post('/api/v1/auth/sso/callback').send({ fingerprint: fingerprint() });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.key).toBe('error.sso_state_invalid');
+  });
+});

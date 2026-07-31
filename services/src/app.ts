@@ -43,6 +43,8 @@ import { requiresMfa } from './platform/rbac.ts';
 
 import { AuthService, AuthorizationService, DeviceService, EmployeeService } from './identity-service/index.ts';
 import type { FingerprintComponents } from './identity-service/deviceFingerprint.ts';
+import { resolveOidcFromEnv } from './identity-service/oidc.ts';
+import { OidcLoginFlow } from './identity-service/oidcFlow.ts';
 import { TenantService } from './tenant-service/index.ts';
 import { BillingService } from './billing-service/index.ts';
 import { MeteringService } from './metering-service/index.ts';
@@ -313,6 +315,91 @@ export function createApp(options: AppOptions = {}): VantikApp {
         token: result.token,
         expiresAt: result.expiresAt,
         deviceRegistered: result.deviceRegistered,
+      });
+    }),
+  );
+
+  /* ----- Masuk lewat SSO (OpenID Connect) -----
+   *
+   * Mati secara bawaan. Seluruh jalur ini hanya hidup bila `VANTIK_OIDC_*` terisi; bila
+   * tidak, `/auth/sso` menjawab `enabled: false` dan layar masuk tidak menampilkan
+   * tombolnya — tidak ada tombol yang mengarah ke kegagalan.
+   */
+  const ssoFlow = new OidcLoginFlow(db, auth, resolveOidcFromEnv());
+
+  // Publik: dipanggil layar masuk sebelum ada sesi. Tidak membocorkan apa pun selain nama
+  // host penyedia — yang memang akan terlihat di bilah alamat begitu pengguna dialihkan.
+  app.get('/api/v1/auth/sso', (_req, res) => {
+    res.json({ enabled: ssoFlow.enabled(), provider: ssoFlow.providerLabel() });
+  });
+
+  app.post(
+    '/api/v1/auth/sso/start',
+    loginLimiter.middleware((req) => `sso-start:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute(async (req, res) => {
+      const body = req.body as { tenantSlug?: string; redirectTo?: string };
+      if (!body.tenantSlug) throw new ValidationError('error.tenant_slug_required');
+
+      const { url } = await ssoFlow.start({ tenantSlug: body.tenantSlug, redirectTo: body.redirectTo ?? null });
+      // URL dikembalikan, BUKAN dijadikan 302: pengalihan pada respons XHR tidak dapat
+      // diikuti peramban, dan klien perlu kesempatan menyimpan keadaannya lebih dulu.
+      res.json({ url });
+    }),
+  );
+
+  /**
+   * Kembali dari penyedia.
+   *
+   * POST, meskipun penyedia mengalihkan lewat GET: atribut perangkat hanya dapat dihitung
+   * di peramban, dan device binding berlaku sama untuk SSO. Halaman callback di aplikasi
+   * web-lah yang menerima pengalihan itu, lalu memanggil endpoint ini dengan `code`,
+   * `state`, dan sidik perangkat.
+   */
+  app.post(
+    '/api/v1/auth/sso/callback',
+    loginLimiter.middleware((req) => `sso-callback:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute(async (req, res) => {
+      const body = req.body as {
+        state?: string;
+        code?: string;
+        fingerprint?: Record<string, unknown>;
+        geo?: { lat: number; lon: number; label?: string };
+      };
+      if (!body.state || !body.code || !body.fingerprint) throw new ValidationError('error.sso_state_invalid');
+
+      const { result, redirectTo } = await ssoFlow.complete({
+        state: body.state,
+        code: body.code,
+        fingerprint: readFingerprint(body.fingerprint, req),
+        ip: clientIp(req),
+        geo: body.geo ?? null,
+      });
+
+      if (result.kind === 'rejected') {
+        res.status(401).json({
+          error: {
+            key: result.reasonKey,
+            recoveryKey: result.recoveryKey ?? null,
+            retryAfter: result.retryAfter ?? null,
+          },
+        });
+        return;
+      }
+      // Jalur SSO tidak menerbitkan tantangan MFA — peran yang mewajibkannya ditahan di
+      // `RequestContext.require()`, bukan di sini. Cabang ini ada supaya perubahan pada
+      // `loginFederated()` di kemudian hari tidak diam-diam mengembalikan bentuk yang
+      // tidak ditangani siapa pun.
+      if (result.kind === 'mfa_required') {
+        res.status(200).json({ mfaRequired: true, challengeToken: result.challengeToken, expiresAt: result.expiresAt });
+        return;
+      }
+
+      issueSessionCookie(res, result.token, result.expiresAt);
+      res.json({
+        token: result.token,
+        expiresAt: result.expiresAt,
+        deviceRegistered: result.deviceRegistered,
+        redirectTo,
       });
     }),
   );

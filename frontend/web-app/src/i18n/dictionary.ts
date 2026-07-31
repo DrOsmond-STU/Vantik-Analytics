@@ -1094,6 +1094,38 @@ export const dictionary = {
   'ui.current_device': ['Perangkat ini', 'This device'],
   'ui.confidence_low': ['Keyakinan rendah', 'Low confidence'],
   'ui.projection_note': ['Proyeksi, bukan kepastian.', 'A projection, not a certainty.'],
+
+  /* ----- Masuk lewat SSO ----- */
+  'action.login_sso': ['Masuk dengan SSO', 'Sign in with SSO'],
+  'ui.sso_or': ['atau', 'or'],
+  'ui.sso_provider': ['Penyedia: {provider}', 'Provider: {provider}'],
+  'ui.sso_redirecting': ['Mengalihkan ke penyedia identitas…', 'Redirecting to your identity provider…'],
+  'ui.sso_finishing': ['Menyelesaikan proses masuk…', 'Finishing sign-in…'],
+  'error.sso_not_configured': [
+    'Masuk lewat SSO belum diatur pada pemasangan ini.',
+    'SSO sign-in is not configured on this installation.',
+  ],
+  'error.sso_state_invalid': [
+    'Proses masuk ini tidak dikenali lagi — mungkin sudah dipakai atau dibuka dari tab lain. Silakan ulangi dari halaman masuk.',
+    'This sign-in attempt is no longer recognised — it may already have been used, or started in another tab. Please start again from the sign-in page.',
+  ],
+  'error.sso_state_expired': [
+    'Proses masuk ini sudah kedaluwarsa. Silakan ulangi dari halaman masuk.',
+    'This sign-in attempt has expired. Please start again from the sign-in page.',
+  ],
+  'error.sso_exchange_failed': [
+    'Penyedia identitas menolak menyelesaikan proses masuk. Hubungi admin bila ini berulang.',
+    'The identity provider refused to complete sign-in. Contact your admin if this keeps happening.',
+  ],
+  'error.sso_token_invalid': [
+    'Bukti identitas dari penyedia tidak dapat diterima. Hubungi admin.',
+    'The proof of identity from the provider could not be accepted. Contact your admin.',
+  ],
+  'error.tenant_slug_required': ['Kode organisasi wajib diisi.', 'The organisation code is required.'],
+  'recovery.sso_start_again': [
+    'Kembali ke halaman masuk lalu ulangi. Bila tetap gagal, hubungi admin.',
+    'Return to the sign-in page and try again. Contact your admin if it keeps failing.',
+  ],
 } as const satisfies Record<string, readonly [string, string]>;
 
 export type DictionaryKey = keyof typeof dictionary;
