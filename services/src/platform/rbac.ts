@@ -235,6 +235,10 @@ export const STANDARD_ROLES: readonly StandardRole[] = [
       'device:approve_transfer',
       'tenant:read',
       'tenant:configure',
+      // Kredensial jembatan MQTT: menerbitkan dan mencabutnya adalah pekerjaan
+      // administrasi sistem, bukan pekerjaan orang yang membaca dasbor.
+      'twin:ingest',
+      'twin:ingest_manage',
     ],
     // Tidak dapat mengubah hak akses (itu kewenangan Super Admin) — SECURITY.md Bagian 5.
     denials: ['authorization:write'],

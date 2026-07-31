@@ -1,0 +1,43 @@
+{
+  "broker": {
+    "host": "broker.contoh.id",
+    "port": 8883,
+    "tls": true,
+    "username": "",
+    "password": "",
+    "clientId": "vantik-bridge-pabrik-1",
+    "keepAliveSeconds": 60,
+    "qos": 1
+  },
+
+  "vantik": {
+    "baseUrl": "https://analitik.contoh.id",
+    "ingestToken": "",
+    "batchSize": 100,
+    "flushIntervalMs": 2000,
+    "maxQueue": 10000,
+    "timeoutMs": 15000
+  },
+
+  "mappings": [
+    {
+      "_catatan": "Kode aset & sensor diambil dari topik. Cocok dengan pabrik/PUMP-1/vibration.",
+      "topic": "pabrik/{asset}/{sensor}",
+      "valuePath": "value",
+      "timePath": "timestamp"
+    },
+    {
+      "_catatan": "Topik tetap dengan muatan berupa angka telanjang, mis. 23.4",
+      "topic": "gedung/lantai-2/suhu-ruang-server",
+      "assetCode": "AC-SERVER-1",
+      "sensorCode": "temperature"
+    },
+    {
+      "_catatan": "Muatan JSON bersarang: {\"d\":{\"t\":23.4},\"ts\":1735689600}",
+      "topic": "iot/+/telemetri/{asset}",
+      "sensorCode": "temperature",
+      "valuePath": "d.t",
+      "timePath": "ts"
+    }
+  ]
+}

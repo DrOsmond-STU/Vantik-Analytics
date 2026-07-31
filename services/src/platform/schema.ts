@@ -1222,6 +1222,34 @@ const REMAINING_MAIN_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_oidc_state_expiry ON oidc_login_state(expires_at);
     `,
   },
+  {
+    id: '0018_ingest_tokens',
+    sql: `
+      -- Kredensial mesin untuk mengirim pembacaan sensor.
+      --
+      -- BUKAN sesi pengguna. Jembatan MQTT berjalan tanpa orang di depannya: ia tidak
+      -- dapat menjawab tantangan MFA, dan memakai akun manusia berarti sesi tunggal
+      -- saling menendang setiap kali jembatannya menyambung ulang.
+      --
+      -- Token diikat pada SATU tenant. Satu token global untuk semua tenant akan berarti
+      -- jembatan milik satu pelanggan dapat menulis ke ruang kerja pelanggan lain.
+      --
+      -- Yang disimpan hanya hash-nya, sama seperti kata sandi dan token sesi: basis data
+      -- yang bocor tidak boleh berisi kredensial yang langsung dapat dipakai.
+      CREATE TABLE ingest_tokens (
+        id            TEXT PRIMARY KEY,
+        tenant_id     TEXT NOT NULL REFERENCES tenants(id),
+        label         TEXT NOT NULL,
+        token_hash    TEXT NOT NULL UNIQUE,
+        created_at    TEXT NOT NULL,
+        created_by    TEXT,
+        last_used_at  TEXT,
+        revoked_at    TEXT,
+        revoked_by    TEXT
+      );
+      CREATE INDEX idx_ingest_tokens_tenant ON ingest_tokens(tenant_id, revoked_at);
+    `,
+  },
 ];
 
 /**

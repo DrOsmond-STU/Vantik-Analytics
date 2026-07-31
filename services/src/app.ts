@@ -20,7 +20,7 @@ import { Scheduler, SCHEDULER_INTERVAL_MS, type JobRunner } from './platform/sch
 import { pruneExpiredRows, retentionReport } from './platform/retention.ts';
 import { transportFromEnv, type ChannelRoutingTransport } from './platform/transports.ts';
 import { KeyRing } from './platform/crypto.ts';
-import { ValidationError } from './platform/errors.ts';
+import { AppError, ValidationError } from './platform/errors.ts';
 import {
   asyncRoute,
   authenticate,
@@ -66,6 +66,7 @@ import {
 import { DashboardService, EmbedRenderer, EmbedService, ReportService } from './designer-service/index.ts';
 import { AlertService, QueueOnlyTransport, type NotificationTransport } from './alerting-service/index.ts';
 import { DigitalTwinService } from './iot-gateway-service/index.ts';
+import { IngestTokenService, contextFromIngestToken } from './iot-gateway-service/ingest.ts';
 import { BalancedScorecardService, CockpitService } from './presentation-service/index.ts';
 
 export interface AppOptions {
@@ -1108,6 +1109,21 @@ export function createApp(options: AppOptions = {}): VantikApp {
   api.get('/twin/maintenance-queue', (req, res) => {
     res.json({ queue: twinOf(req).maintenanceQueue() });
   });
+
+  /* Kredensial jembatan MQTT — diterbitkan admin, dipakai proses di luar aplikasi. */
+  const ingestTokensOf = (req: Request): IngestTokenService => new IngestTokenService(requireContext(req));
+
+  api.get('/twin/ingest-tokens', (req, res) => {
+    res.json({ tokens: ingestTokensOf(req).list() });
+  });
+  api.post('/twin/ingest-tokens', (req, res) => {
+    // Nilai tokennya ada di respons ini dan tidak pernah lagi di mana pun — yang tersimpan
+    // hanya hash-nya.
+    res.status(201).json(ingestTokensOf(req).create(req.body as never));
+  });
+  api.delete('/twin/ingest-tokens/:id', (req, res) => {
+    res.json(ingestTokensOf(req).revoke(req.params.id!));
+  });
   api.post('/twin/assets/:id/tickets', (req, res) => {
     res.status(201).json(twinOf(req).createTicket(req.params.id!, req.body as never));
   });
@@ -1678,6 +1694,93 @@ export function createApp(options: AppOptions = {}): VantikApp {
     }),
   );
 
+  /**
+   * Pembacaan sensor dari jembatan MQTT. TANPA sesi, dengan alasan yang sama seperti di
+   * atas: jembatan berjalan tanpa orang di depannya, tidak dapat menjawab tantangan MFA,
+   * dan tidak boleh memakai akun manusia yang sesinya akan saling menendang.
+   *
+   * Otentikasinya adalah token ingest per-tenant di header. Yang dibawanya hanya izin
+   * `twin:ingest` — tidak dapat membaca dasbor, tidak dapat melihat aset. Perangkat di
+   * lantai pabrik adalah yang paling mudah diambil orang.
+   *
+   * Batasnya longgar karena satu pabrik dapat mengirim ratusan pembacaan per menit, tetapi
+   * tetap ada: tanpa batas, satu jembatan yang rusak dapat mengisi disk sendirian.
+   */
+  const ingestLimiter = new RateLimiter(600, 60_000, db);
+
+  app.post(
+    '/ingest/v1/twin/readings',
+    ingestLimiter.middleware((req) => `ingest:${clientIp(req) ?? 'unknown'}`),
+    asyncRoute(async (req, res) => {
+      const header = req.headers['x-vantik-ingest-token'];
+      const context = contextFromIngestToken(
+        db,
+        audit,
+        Array.isArray(header) ? (header[0] ?? '') : (header ?? ''),
+        clientIp(req),
+      );
+
+      const body = req.body as {
+        readings?: Array<{ assetCode: string; sensorCode: string; value: number; observedAt?: string }>;
+        assetCode?: string;
+        sensorCode?: string;
+        value?: number;
+        observedAt?: string;
+      };
+
+      /**
+       * Menerima satu pembacaan ATAU sekumpulan.
+       *
+       * Berkelompok bukan kemewahan: satu pabrik dengan lima puluh sensor yang melapor
+       * tiap detik menghasilkan lima puluh percakapan HTTP per detik pada hosting yang
+       * memang tidak dibuat untuk itu.
+       */
+      const readings = body.readings ?? [
+        {
+          assetCode: String(body.assetCode ?? ''),
+          sensorCode: String(body.sensorCode ?? ''),
+          value: Number(body.value),
+          observedAt: body.observedAt,
+        },
+      ];
+      if (readings.length === 0 || readings.length > 500) throw new ValidationError('error.ingest_batch_invalid');
+
+      const twin = new DigitalTwinService(context);
+      const accepted: Array<{ assetCode: string; sensorCode: string; status: string; healthScore: number }> = [];
+      const rejected: Array<{ assetCode: string; sensorCode: string; reason: string }> = [];
+
+      for (const reading of readings) {
+        /**
+         * Satu pembacaan yang buruk TIDAK menggugurkan seluruh kelompok.
+         *
+         * Jembatan mengirim apa pun yang ada di broker, termasuk topik dari sensor yang
+         * belum didaftarkan sebagai aset. Menolak seluruh kelompok karena satu topik asing
+         * berarti kehilangan empat puluh sembilan pembacaan yang sah — dan jembatan akan
+         * mengirim ulang kelompok yang sama, gagal lagi, selamanya.
+         */
+        try {
+          if (!Number.isFinite(reading.value)) throw new ValidationError('error.ingest_value_invalid');
+          const result = await twin.ingestReading({
+            assetCode: String(reading.assetCode ?? ''),
+            sensorCode: String(reading.sensorCode ?? ''),
+            value: Number(reading.value),
+            observedAt: reading.observedAt,
+          });
+          accepted.push({ assetCode: reading.assetCode, sensorCode: reading.sensorCode, ...result });
+        } catch (error) {
+          rejected.push({
+            assetCode: String(reading.assetCode ?? ''),
+            sensorCode: String(reading.sensorCode ?? ''),
+            reason: error instanceof AppError ? error.messageKey : 'error.internal',
+          });
+        }
+      }
+
+      // 200 meski sebagian ditolak: jembatan perlu tahu mana yang tidak sampai, dan status
+      // gagal akan membuatnya mengirim ulang yang sudah berhasil.
+      res.json({ accepted: accepted.length, rejected });
+    }),
+  );
 
   /* ================= Penjadwal (PRD 6.4 & 6.16) ================= */
 

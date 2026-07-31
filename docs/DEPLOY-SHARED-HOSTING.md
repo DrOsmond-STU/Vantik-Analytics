@@ -781,6 +781,88 @@ OIDC di atas.
 
 ---
 
+## 8.6 Ingest sensor MQTT — jembatan sebagai proses terpisah
+
+Berlaku bila Anda memakai **Digital Twin** dengan sensor yang melapor lewat MQTT.
+
+### Mengapa tidak di dalam aplikasi
+
+Passenger **mematikan proses yang idle**. Koneksi MQTT harus hidup terus untuk menerima
+apa pun; klien MQTT di dalam aplikasi akan mati bersama prosesnya dan diam-diam berhenti
+menerima data sensor. Yang terlihat: aplikasi berjalan normal, grafik sensor berhenti
+bertambah, dan tidak ada pesan kesalahan di mana pun. Itu bentuk kegagalan yang paling
+mahal — ia baru ketahuan berhari-hari kemudian.
+
+Karena itu jembatannya berdiri sendiri, di `infra/mqtt-bridge/`, dijalankan pada mesin
+yang memang selalu menyala: mini PC di lokasi, VPS kecil, atau Raspberry Pi. Ia berbicara
+MQTT ke dalam jaringan dan HTTPS ke luar — jadi tidak ada port yang perlu dibuka dari
+internet ke lantai pabrik.
+
+```
+sensor → broker MQTT → [jembatan] → HTTPS → aplikasi
+```
+
+Tanpa dependensi; cukup Node.js 20. Petunjuk lengkap beserta contoh unit systemd ada di
+`infra/mqtt-bridge/BACA-SAYA.md`.
+
+### Token ingest
+
+Jembatan tidak memakai akun pengguna. Alasannya bukan kenyamanan: proses tanpa orang di
+depannya tidak dapat menjawab tantangan MFA, dan aturan **sesi tunggal** membuat jembatan
+yang menyambung ulang menendang keluar orang yang sedang bekerja dengan akun itu.
+
+Sebagai **System Admin** atau **Super Admin**:
+
+```
+POST   /api/v1/twin/ingest-tokens      {"label": "Jembatan Pabrik 1"}
+GET    /api/v1/twin/ingest-tokens      daftar (tanpa nilai token)
+DELETE /api/v1/twin/ingest-tokens/:id  mencabut, berlaku seketika
+```
+
+Nilai tokennya ada di jawaban permintaan pembuatan dan **tidak pernah dapat dibaca lagi** —
+yang tersimpan hanya hash-nya, sama seperti kata sandi. Token yang hilang diganti dengan
+menerbitkan yang baru lalu mencabut yang lama.
+
+Yang dibawa token itu **satu izin**: mengirim pembacaan. Ia tidak dapat membaca dasbor,
+melihat daftar aset, atau membuat tiket, dan ia terikat pada **satu ruang kerja**.
+Jembatan yang dipasang di lemari panel adalah perangkat paling mudah diambil orang di
+seluruh pemasangan; yang bocor darinya harus sesedikit mungkin.
+
+`GET /api/v1/twin/ingest-tokens` juga menampilkan **kapan tiap token terakhir dipakai** —
+itulah cara mengenali token yang ditinggalkan bersama perangkat yang sudah dibuang.
+
+### Endpoint yang dipakai jembatan
+
+```
+POST /ingest/v1/twin/readings
+X-Vantik-Ingest-Token: vtk_ing_...
+
+{"readings":[{"assetCode":"PUMP-1","sensorCode":"vibration","value":4.2,
+              "observedAt":"2025-01-01T00:00:00Z"}]}
+```
+
+Menerima satu pembacaan atau sekelompok (maksimum 500). Jawabannya **200 meski sebagian
+ditolak**, disertai daftar yang ditolak beserta alasannya: status gagal akan membuat
+jembatan mengirim ulang pembacaan yang sudah berhasil masuk.
+
+Aset dan sensornya harus **sudah didaftarkan** di Digital Twin dengan kode yang sama
+persis. Jembatan tidak membuat aset — kalau ia membuatnya, satu salah ketik di topik MQTT
+akan melahirkan aset hantu yang tidak pernah dihapus siapa pun.
+
+### Satu perubahan pada izin yang perlu diketahui
+
+Mengirim pembacaan sensor kini menuntut izin `twin:ingest`, terpisah dari `twin:read`.
+Sebelumnya jalur ini tidak memeriksa izin sama sekali: setiap pengguna yang punya sesi
+dapat menyuntik pembacaan — membuat alarm palsu, atau menenggelamkan alarm yang benar di
+antara pembacaan karangan.
+
+Peran **System Admin** dan **Super Admin** memegangnya. Peran lain tidak, termasuk
+Supervisor yang memang melihat lantai pabrik dan membuat tiket. Bila ada integrasi lama
+yang mengirim pembacaan memakai akun pengguna biasa, integrasi itu perlu dipindah ke
+token ingest.
+
+---
+
 ## 9. Backup
 
 Seluruh keadaan aplikasi ada di tiga berkas dalam `~/vantik-data/`:

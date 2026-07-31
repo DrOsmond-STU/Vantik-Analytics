@@ -1076,3 +1076,90 @@ describe('SSO lewat HTTP', () => {
     expect(response.body.error.key).toBe('error.sso_state_invalid');
   });
 });
+
+/**
+ * Jalur masuk pembacaan sensor lewat HTTP.
+ *
+ * Rute ini TANPA sesi — jembatan MQTT berjalan tanpa orang di depannya. Dua kekeliruan
+ * yang hanya terlihat di tingkat HTTP: rute yang tidak sengaja berada di balik
+ * `authenticate()` sehingga setiap jembatan dijawab 401, dan rute publik yang lupa
+ * memeriksa tokennya sama sekali.
+ */
+describe('Ingest sensor lewat HTTP', () => {
+  let ingestToken: string;
+
+  it('TC-E2E-54 — token diterbitkan admin dan nilainya dikembalikan SEKALI', async () => {
+    const created = await request(app)
+      .post('/api/v1/twin/ingest-tokens')
+      .set(...auth())
+      .send({ label: 'Jembatan Pabrik 1' });
+
+    expect(created.status).toBe(201);
+    expect(created.body.token).toMatch(/^vtk_ing_/);
+    ingestToken = created.body.token as string;
+
+    const listed = await request(app).get('/api/v1/twin/ingest-tokens').set(...auth());
+    expect(listed.status).toBe(200);
+    // Daftar tidak pernah memuat nilainya — yang tersimpan hanya hash-nya.
+    expect(JSON.stringify(listed.body)).not.toContain(ingestToken);
+  });
+
+  it('TC-E2E-55 — jembatan mengirim sekelompok pembacaan TANPA sesi', async () => {
+    const zone = await request(app).post('/api/v1/twin/zones').set(...auth()).send({ name: 'Zona Ingest' });
+    await request(app)
+      .post('/api/v1/twin/assets')
+      .set(...auth())
+      .send({
+        code: 'KOMPRESOR-1',
+        name: 'Kompresor',
+        category: 'compressor',
+        zoneId: zone.body.id,
+        sensors: [{ code: 'pressure', label: 'Tekanan', unit: 'bar', warnMax: 9, critMax: 11 }],
+      });
+
+    const response = await request(app)
+      .post('/ingest/v1/twin/readings')
+      .set('X-Vantik-Ingest-Token', ingestToken)
+      .send({
+        readings: [
+          { assetCode: 'KOMPRESOR-1', sensorCode: 'pressure', value: 6.2 },
+          { assetCode: 'KOMPRESOR-1', sensorCode: 'pressure', value: 6.4 },
+          // Sensor yang belum terdaftar: ditolak SENDIRI, tidak menggugurkan yang lain.
+          { assetCode: 'KOMPRESOR-1', sensorCode: 'entah', value: 1 },
+        ],
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.accepted).toBe(2);
+    expect(response.body.rejected).toHaveLength(1);
+    // 200 meski sebagian ditolak: status gagal akan membuat jembatan mengirim ulang
+    // pembacaan yang sudah berhasil masuk.
+    expect(response.body.rejected[0].sensorCode).toBe('entah');
+  });
+
+  it('TC-E2E-56 — tanpa token, atau dengan token karangan, ditolak 403', async () => {
+    for (const header of [undefined, 'vtk_ing_karangan', 'sembarang']) {
+      const req = request(app).post('/ingest/v1/twin/readings');
+      if (header) req.set('X-Vantik-Ingest-Token', header);
+      const response = await req.send({ assetCode: 'KOMPRESOR-1', sensorCode: 'pressure', value: 5 });
+
+      // 403, bukan 401: tidak ada sesi yang perlu diperbarui, dan tidak ada tantangan
+      // masuk yang masuk akal bagi sebuah proses.
+      expect(response.status, String(header)).toBe(403);
+    }
+  });
+
+  it('TC-E2E-57 — token yang dicabut berhenti berlaku seketika', async () => {
+    const listed = await request(app).get('/api/v1/twin/ingest-tokens').set(...auth());
+    const id = listed.body.tokens[0].id as string;
+
+    const revoked = await request(app).delete(`/api/v1/twin/ingest-tokens/${id}`).set(...auth());
+    expect(revoked.status).toBe(200);
+
+    const after = await request(app)
+      .post('/ingest/v1/twin/readings')
+      .set('X-Vantik-Ingest-Token', ingestToken)
+      .send({ assetCode: 'KOMPRESOR-1', sensorCode: 'pressure', value: 5 });
+    expect(after.status).toBe(403);
+  });
+});

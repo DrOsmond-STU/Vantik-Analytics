@@ -66,6 +66,7 @@ export const TENANT_SCOPED_TABLES = new Set([
   'sensor_readings',
   'failure_predictions',
   'maintenance_tickets',
+  'ingest_tokens',
   'bsc_perspectives',
   'bsc_objectives',
   'connection_secrets',
