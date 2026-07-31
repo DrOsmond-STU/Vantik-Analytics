@@ -874,6 +874,19 @@ export function createApp(options: AppOptions = {}): VantikApp {
     res.json(reportsOf(req).renderDocument(req.params.id!));
   });
 
+  /**
+   * Berkas PDF sungguhan.
+   *
+   * Melewati `renderDocument()` yang sama, jadi gerbang klasifikasi dan pencatatan ekspor
+   * berlaku persis sama — rute ini bukan jalan pintas, hanya bentuk keluaran yang berbeda.
+   */
+  api.get('/reports/:id/pdf', (req, res) => {
+    const { filename, bytes } = reportsOf(req).renderPdfDocument(req.params.id!);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(bytes);
+  });
+
   api.get('/dashboards/:id/embed-tokens', (req, res) => {
     res.json({ tokens: embedOf(req).list(req.params.id!), usage: embedOf(req).usageStats(req.params.id!) });
   });

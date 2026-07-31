@@ -45,7 +45,7 @@ dilakukan — perilaku yang disengaja (SECURITY.md Bagian 4), bukan kerusakan.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 635 test (588 backend + 47 komponen web)
+npm test              # 647 test (600 backend + 47 komponen web)
 npm run test:coverage # backend dengan ambang cakupan
 npm run test:web      # hanya uji komponen/DOM web app
 ```
@@ -159,8 +159,6 @@ Dinyatakan terbuka, bukan disembunyikan:
 
 - **SSO SAML/OIDC** — skema & kolom `auth_provider` sudah ada; alur federasi belum. (MFA berbasis TOTP **sudah** ada — lihat tabel kontrol keamanan.)
 - **Ingest MQTT** — Digital Twin menerima pembacaan sensor lewat REST; gateway MQTT belum.
-- **Ekspor PDF biner** — `renderDocument()` mengembalikan struktur dokumen; render PDF
-  dilakukan di sisi klien/worker.
 
 ### Pertanyaan terbuka yang memengaruhi implementasi
 
@@ -216,6 +214,7 @@ pelanggaran baru di masa depan.
 
 | Berkas | Cakupan |
 |---|---|
+| `tests/pdf.test.ts` | Penulis PDF tanpa dependensi: tabel xref menunjuk ke posisi objek yang sebenarnya (meleset satu byte = berkas ditolak pembaca PDF), aksara di luar Latin-1 dibuang alih-alih menjadi karakter acak, kurung dan garis miring terbalik dilarikan, dan jalur PDF **tidak** menjadi pintu belakang yang melewati persetujuan Data Steward untuk laporan `restricted` |
 | `tests/drivers.test.ts` | Uji koneksi yang benar-benar menyambung, terhadap server tiruan yang mengucapkan protokol PostgreSQL v3 dan MySQL v10: jawaban MD5 dan `mysql_native_password` dihitung sesuai rumusnya, kata sandi salah dibedakan dari basis data hilang dan dari host tak terjangkau, Oracle dijawab tidak tersedia alih-alih berhasil, dan kredensial tidak pernah muncul di hasil uji |
 | `tests/xlsx.test.ts` | Pembacaan XLSX terhadap berkas ZIP+XML **sungguhan** yang dibangun uji itu sendiri: sel kosong di tengah baris tidak menggeser kolom, tanggal serial memakai epoch Excel termasuk bug tahun kabisat 1900, formula dibaca nilai hasilnya, berkas terenkripsi dikatakan terenkripsi alih-alih rusak, dan arsip yang mengaku membongkar 1 GB ditolak sebelum dibongkar |
 | `tests/security.test.ts` | Isolasi tenant (**memblokir rilis**), matriks negatif RBAC, RLS, immutability audit |
