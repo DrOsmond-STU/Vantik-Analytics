@@ -863,6 +863,81 @@ token ingest.
 
 ---
 
+## 8.7 Menarik data dari basis data eksternal
+
+Berlaku bila Anda ingin data masuk dari PostgreSQL atau MySQL, bukan lewat unggahan berkas.
+
+### Cara kerjanya
+
+Query disimpan **di konfigurasi koneksi**, bukan dikirim per-permintaan. Itu disengaja:
+query yang dapat dikirim pemanggil menjadikan modul ini konsol SQL terhadap basis data
+pelanggan, bukan sebuah integrasi. Yang boleh mengubah query adalah orang yang boleh
+mengubah koneksinya (`connection:write`); yang boleh menjalankannya cukup `connection:sync`.
+
+```
+POST /api/v1/connections            {"name":"Gudang Data","kind":"postgresql",
+                                     "host":"...","port":5432,"databaseName":"...",
+                                     "username":"...","secrets":{"password":"..."},
+                                     "options":{"query":"SELECT wilayah, nilai FROM penjualan",
+                                                "rowLimit":10000}}
+POST /api/v1/connections/:id/sync   menjalankan query, hasilnya menjadi dataset
+GET  /api/v1/connections/:id/history riwayat, berikut alasan kegagalannya
+```
+
+Hasil query dialirkan sebagai CSV ke **jalur unggah dataset yang sudah ada**. Artinya
+deteksi tipe kolom, pemeriksaan mutu, kuota paket, dan jejak audit berlaku sama persis
+seperti unggahan manual — bukan jalur penyerapan kedua yang harus dijaga agar tetap sepakat.
+
+### Hanya SELECT
+
+Perintah selain `SELECT` (dan `WITH ... SELECT`) **ditolak sebelum satu byte pun dikirim**
+ke basis data. Termasuk yang ditolak: lebih dari satu pernyataan, komentar, dan
+`WITH ... AS (INSERT ...)` yang diawali `WITH` tetapi sebenarnya menulis.
+
+Alasannya bukan teori: kredensial koneksi sering diberi hak tulis oleh administrator basis
+data yang sedang terburu-buru. Tanpa gerbang ini, kolom query di layar konfigurasi menjadi
+jalan menghapus isi basis data produksi — dengan kredensial pelanggan sendiri, sehingga
+jejaknya pun menunjuk ke mereka.
+
+Pemeriksaannya sengaja ketat dan menolak apa pun yang meragukan. Query sah yang tertolak
+hanya merepotkan; query berbahaya yang lolos tidak dapat ditarik kembali.
+
+### Batas jumlah baris
+
+Bawaan **50.000 baris**, dapat diturunkan lewat `options.rowLimit`. Hasilnya dikumpulkan di
+memori sebelum masuk basis data, dan aplikasi ini berjalan dengan batas memori 512MB–1GB:
+satu `SELECT` tanpa `WHERE` pada tabel berisi jutaan baris akan mematikan prosesnya — dan
+yang mati bukan hanya sinkronisasi itu, melainkan aplikasi untuk **semua** penyewa.
+
+Bila hasilnya terpotong, jawabannya memuat `truncated: true`. Persempit query dengan `WHERE`
+atau `LIMIT`; memotong diam-diam berarti laporan yang salah tanpa ada yang tahu.
+
+Batas waktu satu penarikan: 60 detik.
+
+### Membaca kegagalan
+
+`GET /api/v1/connections/:id/history` memuat `outcome` dan `message_key`:
+
+| `outcome` | Artinya |
+|---|---|
+| `success` | Berhasil; `rows_ingested` menyatakan jumlah barisnya |
+| `query_failed` | Query-nya yang bermasalah — nama tabel/kolom salah, atau ditolak gerbang hanya-baca |
+| `auth_failed` | Koneksinya yang bermasalah — kredensial, jaringan, atau basis data tidak ada |
+
+Perbedaan itu penting dan sengaja dibuat: **query yang salah tidak menaikkan penghitung
+kegagalan koneksi dan tidak mengunci koneksinya.** Tanpa pemisahan itu, tiga kali salah
+ketik nama tabel akan mengunci koneksi yang sebenarnya sehat — dan yang terkunci bukan
+hanya orang yang salah ketik, melainkan seluruh sinkronisasi terjadwal di belakangnya.
+
+### Yang tidak dapat ditarik lewat jalur ini
+
+- **Oracle** — lihat §11. Uji koneksinya menjawab "driver tidak tersedia".
+- **REST dan Google Sheets** tidak berbicara SQL; keduanya punya jalurnya sendiri.
+- **MySQL dengan `caching_sha2_password`** (bawaan MySQL 8 di atas koneksi tanpa TLS) —
+  dijawab apa adanya saat uji koneksi, bukan dibiarkan gagal saat sinkronisasi.
+
+---
+
 ## 9. Backup
 
 Seluruh keadaan aplikasi ada di tiga berkas dalam `~/vantik-data/`:

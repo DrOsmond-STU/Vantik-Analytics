@@ -1122,6 +1122,33 @@ export const dictionary = {
     'The proof of identity from the provider could not be accepted. Contact your admin.',
   ],
   'error.tenant_slug_required': ['Kode organisasi wajib diisi.', 'The organisation code is required.'],
+
+  /* ----- Penarikan data dari basis data eksternal ----- */
+  'error.query_not_configured': [
+    'Koneksi ini belum punya query. Isi query SELECT-nya di pengaturan koneksi sebelum menyinkronkan.',
+    'This connection has no query yet. Set its SELECT query in the connection settings before syncing.',
+  ],
+  'error.query_select_only': [
+    'Hanya perintah SELECT yang boleh dijalankan lewat koneksi ini.',
+    'Only SELECT statements may be run through this connection.',
+  ],
+  'error.query_multiple_statements': [
+    'Query hanya boleh berisi satu perintah.',
+    'The query may contain only one statement.',
+  ],
+  'error.query_comment_not_allowed': [
+    'Query tidak boleh memuat komentar.',
+    'The query may not contain comments.',
+  ],
+  'error.query_empty': ['Query belum diisi.', 'The query is empty.'],
+  'error.query_failed': [
+    'Basis data menolak query ini. Periksa nama tabel dan kolomnya.',
+    'The database rejected this query. Check the table and column names.',
+  ],
+  'ui.sync_truncated': [
+    'Hasil dipotong pada {rows} baris pertama. Persempit query dengan WHERE atau LIMIT agar lengkap.',
+    'Results were capped at the first {rows} rows. Narrow the query with WHERE or LIMIT to get everything.',
+  ],
   'recovery.sso_start_again': [
     'Kembali ke halaman masuk lalu ulangi. Bila tetap gagal, hubungi admin.',
     'Return to the sign-in page and try again. Contact your admin if it keeps failing.',

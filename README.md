@@ -45,7 +45,7 @@ dilakukan — perilaku yang disengaja (SECURITY.md Bagian 4), bukan kerusakan.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 711 test (664 backend + 47 komponen web)
+npm test              # 738 test (691 backend + 47 komponen web)
 npm run test:coverage # backend dengan ambang cakupan
 npm run test:web      # hanya uji komponen/DOM web app
 ```
@@ -134,7 +134,7 @@ berbeda-beda dan dinyatakan jujur di bawah — mengikuti prioritas rilis PRD Bag
 | 2. Visualisasi & Pelaporan | Dashboard Designer, Report Designer, Interactive Visualization, Embed Dashboard | Fungsional; designer memakai penataan widget berbasis daftar, belum *drag-and-drop* penuh |
 | 3. Analitik Cerdas (AI) | AI Analytics, Forecast Analytics, RCA, Data Discovery, AI Narrative Report | Fungsional dengan penyedia **deterministik** bawaan; antarmuka `LlmProvider` siap dipasangi LLM eksternal/self-hosted |
 | 4. Analisis Statistik | Statistik Deskriptif, Uji Hipotesis, Regresi & Korelasi | Fungsional penuh, terverifikasi terhadap nilai rujukan |
-| 5. Manajemen Data | Dataset, Koneksi Eksternal, Data Modeling, Data Quality Center, KPI Center | Fungsional penuh |
+| 5. Manajemen Data | Dataset, Koneksi Eksternal, Data Modeling, Data Quality Center, KPI Center | Fungsional penuh; Koneksi Eksternal **menarik data sungguhan** dari PostgreSQL & MySQL (hanya `SELECT`, batas 50.000 baris) — hasilnya masuk lewat jalur dataset yang sama dengan unggahan berkas |
 | 6. Monitoring | Alert Center, Digital Twin | Fungsional dengan **penjadwal**: ambang batas KPI disapu berkala, bukan hanya saat ada panggilan API. Pengiriman kanal lewat `NotificationTransport`; ingest sensor lewat HTTP, dan **MQTT lewat jembatan proses terpisah** (`infra/mqtt-bridge/`) — lihat alasannya di bawah |
 | 7. Administrasi Sistem | Master Pegawai, Otorisasi User, Log Aktivitas, Perangkat & Sesi | Fungsional penuh; masuk lewat **SSO OpenID Connect** tersedia dan mati secara bawaan (SAML tidak didukung — lihat di bawah) |
 | 8. Langganan & Billing | Manajemen Tenant, Langganan & Paket, Billing & Faktur, Usage Metering & Kuota | Fungsional; jangka waktu 1/3/6/12 bulan, **penghentian otomatis saat masa berlaku habis** (dihitung dari tanggal pada tiap permintaan, tidak menunggu penjadwal), *payment gateway* lewat webhook terverifikasi tanda tangan |
@@ -254,6 +254,7 @@ pelanggaran baru di masa depan.
 |---|---|
 | `tests/pdf.test.ts` | Penulis PDF tanpa dependensi: tabel xref menunjuk ke posisi objek yang sebenarnya (meleset satu byte = berkas ditolak pembaca PDF), aksara di luar Latin-1 dibuang alih-alih menjadi karakter acak, kurung dan garis miring terbalik dilarikan, dan jalur PDF **tidak** menjadi pintu belakang yang melewati persetujuan Data Steward untuk laporan `restricted` |
 | `tests/drivers.test.ts` | Uji koneksi yang benar-benar menyambung, terhadap server tiruan yang mengucapkan protokol PostgreSQL v3 dan MySQL v10: jawaban MD5 dan `mysql_native_password` dihitung sesuai rumusnya, kata sandi salah dibedakan dari basis data hilang dan dari host tak terjangkau, Oracle dijawab tidak tersedia alih-alih berhasil, dan kredensial tidak pernah muncul di hasil uji |
+| `tests/connection-sync.test.ts` | Penarikan data sampai menjadi dataset yang dapat dibaca kembali: perintah yang menulis ditolak sebelum menyentuh jaringan, tabel kosong adalah keberhasilan sedangkan query yang ditolak basis data adalah kegagalan, query yang salah **tidak** mengunci koneksi yang sehat, pemotongan dinyatakan, dan nilai berkoma tidak menggeser kolom |
 | `tests/xlsx.test.ts` | Pembacaan XLSX terhadap berkas ZIP+XML **sungguhan** yang dibangun uji itu sendiri: sel kosong di tengah baris tidak menggeser kolom, tanggal serial memakai epoch Excel termasuk bug tahun kabisat 1900, formula dibaca nilai hasilnya, berkas terenkripsi dikatakan terenkripsi alih-alih rusak, dan arsip yang mengaku membongkar 1 GB ditolak sebelum dibongkar |
 | `tests/security.test.ts` | Isolasi tenant (**memblokir rilis**), matriks negatif RBAC, RLS, immutability audit |
 | `tests/modules.test.ts` | TC-DS-01…08 dari PRD 6.11, DQ proporsi persis, koneksi, KPI, alert, embed, device, twin, kuota |

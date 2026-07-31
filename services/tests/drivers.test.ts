@@ -22,7 +22,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { createServer as createTcpServer, type Server as TcpServer, type Socket } from 'node:net';
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
-import { probeConnection } from '../src/data-platform-service/drivers.ts';
+import { assertReadOnlyQuery, probeConnection, runQuery } from '../src/data-platform-service/drivers.ts';
 
 /* ================= Server tiruan ================= */
 
@@ -359,6 +359,36 @@ async function tcpFakeGreeting(greeting: Buffer, reply: Buffer): Promise<Fake> {
   return fake;
 }
 
+/**
+ * Server tiruan bernaskah: mengirim salam saat klien menyambung, lalu membalas paket
+ * ke-N dengan jawaban ke-N.
+ *
+ * Dibutuhkan karena penarikan data adalah percakapan BERTAHAP — jabat tangan lalu query —
+ * sementara `tcpFakeGreeting` membalas hal yang sama untuk setiap paket.
+ */
+async function tcpFakeScript(greeting: Buffer, replies: Buffer[]): Promise<Fake> {
+  const diterima: Buffer[] = [];
+  const server: TcpServer = createTcpServer((socket) => {
+    let step = 0;
+    socket.write(greeting);
+    socket.on('data', (chunk: Buffer) => {
+      diterima.push(chunk);
+      const reply = replies[step++];
+      if (reply) socket.write(reply);
+    });
+    socket.on('error', () => undefined);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const fake: Fake = {
+    port: typeof address === 'object' && address ? address.port : 0,
+    diterima,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+  fakes.push(fake);
+  return fake;
+}
+
 /* ================= REST, Oracle, Google ================= */
 
 describe('REST dan sisanya', () => {
@@ -435,5 +465,350 @@ describe('REST dan sisanya', () => {
       options: {},
     });
     expect(tanpaKunci.reasonKey).toBe('error.connection_credential_malformed');
+  });
+});
+
+/* ================= Penarikan data ================= */
+
+/**
+ * Yang diuji di bawah adalah **membaca hasil query**, bukan lagi sekadar jabat tangan.
+ *
+ * Tiga hal yang paling mudah salah, dan tidak satu pun melempar kesalahan saat salah — ia
+ * hanya menghasilkan tabel yang isinya keliru:
+ *
+ *  1. **NULL dibedakan dari string kosong.** PostgreSQL menandainya dengan panjang -1,
+ *     MySQL dengan byte 0xfb. Membacanya sebagai teks biasa menggeser seluruh kolom.
+ *  2. **Nama kolom MySQL adalah string lenenc KELIMA** pada definisi kolom. Mengambil yang
+ *     salah menghasilkan nama tabel sebagai nama kolom.
+ *  3. **Paket EOF vs bilangan lenenc**, keduanya diawali 0xfe. Membedakannya lewat panjang.
+ *
+ * Ditambah gerbang yang paling penting: **hanya SELECT**. Kredensial koneksi sering diberi
+ * hak tulis oleh administrator yang terburu-buru, sehingga kolom query yang tidak dijaga
+ * menjadi jalan menghapus basis data produksi orang lain.
+ */
+describe('Gerbang query hanya-baca', () => {
+  it('TC-DRV-17 — hanya SELECT dan WITH yang diterima', () => {
+    expect(assertReadOnlyQuery('SELECT * FROM pelanggan')).toEqual({ ok: true });
+    expect(assertReadOnlyQuery('  with x as (select 1) select * from x')).toEqual({ ok: true });
+    // Titik koma di ujung wajar dari penyalinan; yang di TENGAH tidak.
+    expect(assertReadOnlyQuery('SELECT 1;')).toEqual({ ok: true });
+
+    for (const jahat of [
+      'DELETE FROM pelanggan',
+      'DROP TABLE pelanggan',
+      'UPDATE pelanggan SET saldo = 0',
+      'TRUNCATE pelanggan',
+      'GRANT ALL ON pelanggan TO publik',
+    ]) {
+      expect(assertReadOnlyQuery(jahat), jahat).toEqual({ ok: false, reasonKey: 'error.query_select_only' });
+    }
+  });
+
+  it('TC-DRV-18 — pernyataan kedua yang diselipkan di belakang SELECT ditolak', () => {
+    // Jalur klasik: yang terbaca mata adalah SELECT, yang dijalankan server adalah dua
+    // pernyataan.
+    expect(assertReadOnlyQuery('SELECT 1; DROP TABLE pelanggan')).toEqual({
+      ok: false,
+      reasonKey: 'error.query_multiple_statements',
+    });
+    // Komentar dapat menyembunyikan pernyataan kedua dari pembaca, bukan dari server.
+    expect(assertReadOnlyQuery('SELECT 1 -- aman\nDROP TABLE x')).toEqual({
+      ok: false,
+      reasonKey: 'error.query_comment_not_allowed',
+    });
+    expect(assertReadOnlyQuery('SELECT /* x */ 1')).toEqual({
+      ok: false,
+      reasonKey: 'error.query_comment_not_allowed',
+    });
+  });
+
+  it('TC-DRV-19 — `WITH ... AS (INSERT ...)` yang benar-benar menulis ditolak', () => {
+    // Diawali `WITH`, tetapi di PostgreSQL ini menulis. Memeriksa kata pertama saja tidak cukup.
+    expect(assertReadOnlyQuery('WITH baru AS (INSERT INTO log VALUES (1) RETURNING *) SELECT * FROM baru')).toEqual({
+      ok: false,
+      reasonKey: 'error.query_select_only',
+    });
+    expect(assertReadOnlyQuery('   ')).toEqual({ ok: false, reasonKey: 'error.query_empty' });
+  });
+
+  it('TC-DRV-20 — query tidak dijalankan sama sekali bila gerbangnya menolak', async () => {
+    // Bukan hanya hasilnya yang ditolak: tidak boleh ada satu byte pun yang sampai ke server.
+    const fake = await tcpFake((_data, socket) => {
+      socket.write(Buffer.concat([pgAuth(0), PG_READY]));
+    });
+
+    const hasil = await runQuery(
+      { kind: 'postgresql', host: '127.0.0.1', port: fake.port, databaseName: 'a', username: 'u', secrets: {}, options: {} },
+      'DROP TABLE pelanggan',
+    );
+
+    expect(hasil.ok).toBe(false);
+    expect(hasil.reasonKey).toBe('error.query_select_only');
+    expect(fake.diterima).toHaveLength(0);
+  });
+
+  it('TC-DRV-21 — jenis koneksi tanpa SQL dijawab tidak tersedia', async () => {
+    const hasil = await runQuery(
+      { kind: 'oracle', host: 'x', secrets: {}, options: {} },
+      'SELECT 1',
+    );
+    expect(hasil.reasonKey).toBe('error.connection_driver_unavailable');
+  });
+});
+
+describe('Membaca hasil query PostgreSQL', () => {
+  /** RowDescription: 18 byte metadata setelah setiap nama kolom. */
+  function pgRowDescription(names: string[]): Buffer {
+    const head = Buffer.alloc(2);
+    head.writeUInt16BE(names.length, 0);
+    const fields = names.map((name) => Buffer.concat([Buffer.from(`${name}\0`, 'utf8'), Buffer.alloc(18)]));
+    return pg('T', Buffer.concat([head, ...fields]));
+  }
+
+  /** DataRow. `null` menjadi panjang -1, yang BUKAN string kosong. */
+  function pgDataRow(values: Array<string | null>): Buffer {
+    const head = Buffer.alloc(2);
+    head.writeUInt16BE(values.length, 0);
+    const cells = values.map((value) => {
+      if (value === null) {
+        const nul = Buffer.alloc(4);
+        nul.writeInt32BE(-1, 0);
+        return nul;
+      }
+      const payload = Buffer.from(value, 'utf8');
+      const length = Buffer.alloc(4);
+      length.writeInt32BE(payload.length, 0);
+      return Buffer.concat([length, payload]);
+    });
+    return pg('D', Buffer.concat([head, ...cells]));
+  }
+
+  const input = (port: number) => ({
+    kind: 'postgresql' as const,
+    host: '127.0.0.1',
+    port,
+    databaseName: 'analitik',
+    username: 'vantik',
+    secrets: { password: 'sandi' },
+    options: {},
+  });
+
+  it('TC-DRV-22 — kolom dan baris terbaca, NULL dibedakan dari string kosong', async () => {
+    const fake = await tcpFake((data, socket) => {
+      // Paket pertama adalah StartupMessage (tanpa byte tipe); sisanya adalah Query.
+      if (data[0] === 0x51) {
+        socket.write(
+          Buffer.concat([
+            pgRowDescription(['wilayah', 'nilai', 'catatan']),
+            pgDataRow(['Jakarta', '1500', null]),
+            pgDataRow(['Bandung', '900', '']),
+            pg('C', Buffer.from('SELECT 2\0', 'utf8')),
+            PG_READY,
+          ]),
+        );
+        return;
+      }
+      socket.write(Buffer.concat([pgAuth(0), PG_READY]));
+    });
+
+    const hasil = await runQuery(input(fake.port), 'SELECT wilayah, nilai, catatan FROM penjualan');
+
+    expect(hasil.ok).toBe(true);
+    expect(hasil.columns).toEqual(['wilayah', 'nilai', 'catatan']);
+    expect(hasil.rows).toEqual([
+      ['Jakarta', '1500', ''],
+      ['Bandung', '900', ''],
+    ]);
+    expect(hasil.truncated).toBe(false);
+  });
+
+  it('TC-DRV-23 — query yang ditolak server dijawab alasan query, bukan alasan koneksi', async () => {
+    const fake = await tcpFake((data, socket) => {
+      if (data[0] === 0x51) {
+        socket.write(Buffer.concat([pgError('42P01'), PG_READY]));
+        return;
+      }
+      socket.write(Buffer.concat([pgAuth(0), PG_READY]));
+    });
+
+    const hasil = await runQuery(input(fake.port), 'SELECT * FROM tabel_yang_tidak_ada');
+
+    // Membedakan "tabel tidak ada" dari "server tidak terjangkau" menentukan ke mana
+    // operator mencari.
+    expect(hasil.ok).toBe(false);
+    expect(hasil.reasonKey).toBe('error.query_failed');
+    expect(hasil.detail).toBe('pg_42P01');
+  });
+
+  it('TC-DRV-24 — hasil dipotong pada batas, dan pemotongannya DINYATAKAN', async () => {
+    const fake = await tcpFake((data, socket) => {
+      if (data[0] === 0x51) {
+        const baris = Array.from({ length: 12 }, (_, i) => pgDataRow([`baris-${i}`]));
+        socket.write(Buffer.concat([pgRowDescription(['nama']), ...baris, PG_READY]));
+        return;
+      }
+      socket.write(Buffer.concat([pgAuth(0), PG_READY]));
+    });
+
+    const hasil = await runQuery(input(fake.port), 'SELECT nama FROM banyak', 5);
+
+    // Diam-diam memotong berarti laporan yang salah tanpa ada yang tahu.
+    expect(hasil.rows).toHaveLength(5);
+    expect(hasil.truncated).toBe(true);
+  });
+});
+
+
+describe('Membaca hasil query MySQL', () => {
+  function packet(body: Buffer, seq: number): Buffer {
+    const out = Buffer.alloc(4 + body.length);
+    out.writeUIntLE(body.length, 0, 3);
+    out.writeUInt8(seq, 3);
+    body.copy(out, 4);
+    return out;
+  }
+
+  /** String berpanjang-variabel (bentuk pendek; cukup untuk nilai uji). */
+  function lenenc(value: string): Buffer {
+    const payload = Buffer.from(value, 'utf8');
+    return Buffer.concat([Buffer.from([payload.length]), payload]);
+  }
+
+  /**
+   * Definisi kolom protokol 41. Nama adalah string lenenc KELIMA.
+   *
+   * Keempat yang mendahuluinya sengaja diberi nilai yang berbeda-beda, supaya uji ini
+   * GAGAL bila yang diambil keliru — bukan diam-diam lulus dengan nama tabel.
+   */
+  function columnDef(name: string, seq: number): Buffer {
+    return packet(
+      Buffer.concat([
+        lenenc('def'),
+        lenenc('skema'),
+        lenenc('tabel-alias'),
+        lenenc('tabel-asli'),
+        lenenc(name),
+        lenenc('kolom-asli'),
+        Buffer.from([0x0c, 0x2d, 0x00]),
+        Buffer.alloc(10),
+      ]),
+      seq,
+    );
+  }
+
+  const eof = (seq: number): Buffer => packet(Buffer.from([0xfe, 0x00, 0x00, 0x02, 0x00]), seq);
+  const OK = packet(Buffer.from([0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00]), 2);
+
+  function greeting(): Buffer {
+    const salt1 = Buffer.from('12345678', 'utf8');
+    const salt2 = Buffer.from('123456789012', 'utf8');
+    return packet(
+      Buffer.concat([
+        Buffer.from([10]),
+        Buffer.from('8.0.36-uji\0', 'utf8'),
+        Buffer.from([1, 0, 0, 0]),
+        salt1,
+        Buffer.from([0]),
+        Buffer.from([0xff, 0xf7]),
+        Buffer.from([45]),
+        Buffer.from([2, 0]),
+        Buffer.from([0xff, 0x81]),
+        Buffer.from([salt1.length + salt2.length + 1]),
+        Buffer.alloc(10),
+        salt2,
+        Buffer.from([0]),
+        Buffer.from('mysql_native_password\0', 'utf8'),
+      ]),
+      0,
+    );
+  }
+
+  const input = (port: number) => ({
+    kind: 'mysql' as const,
+    host: '127.0.0.1',
+    port,
+    databaseName: 'analitik',
+    username: 'vantik',
+    secrets: { password: 'sandi-mysql' },
+    options: {},
+  });
+
+  it('TC-DRV-25 — kolom dan baris terbaca; NULL dibedakan dari string kosong', async () => {
+    const resultSet = Buffer.concat([
+      packet(Buffer.from([0x02]), 1), // jumlah kolom
+      columnDef('wilayah', 2),
+      columnDef('nilai', 3),
+      eof(4),
+      packet(Buffer.concat([lenenc('Jakarta'), lenenc('1500')]), 5),
+      // 0xfb = NULL SQL, bukan string kosong.
+      packet(Buffer.concat([lenenc('Bandung'), Buffer.from([0xfb])]), 6),
+      eof(7),
+    ]);
+    const fake = await tcpFakeScript(greeting(), [OK, resultSet]);
+
+    const hasil = await runQuery(input(fake.port), 'SELECT wilayah, nilai FROM penjualan');
+
+    expect(hasil.ok).toBe(true);
+    // Bila nama kolom diambil dari medan yang salah, di sini akan muncul "tabel-asli".
+    expect(hasil.columns).toEqual(['wilayah', 'nilai']);
+    expect(hasil.rows).toEqual([
+      ['Jakarta', '1500'],
+      ['Bandung', ''],
+    ]);
+    expect(hasil.truncated).toBe(false);
+  });
+
+  it('TC-DRV-26 — COM_QUERY benar-benar dikirim, dengan teks query apa adanya', async () => {
+    const fake = await tcpFakeScript(greeting(), [
+      OK,
+      Buffer.concat([packet(Buffer.from([0x01]), 1), columnDef('a', 2), eof(3), eof(4)]),
+    ]);
+
+    await runQuery(input(fake.port), 'SELECT a FROM t');
+
+    // Paket kedua dari klien adalah perintahnya: 0x03 diikuti teks query.
+    const perintah = fake.diterima[1]!;
+    expect(perintah[4]).toBe(0x03);
+    expect(perintah.subarray(5).toString('utf8')).toBe('SELECT a FROM t');
+  });
+
+  it('TC-DRV-27 — kesalahan dari server dijawab alasan query berikut kodenya', async () => {
+    const errorPacket = packet(
+      Buffer.concat([Buffer.from([0xff]), (() => { const b = Buffer.alloc(2); b.writeUInt16LE(1146); return b; })(), Buffer.from('#42S02tidak ada', 'utf8')]),
+      1,
+    );
+    const fake = await tcpFakeScript(greeting(), [OK, errorPacket]);
+
+    const hasil = await runQuery(input(fake.port), 'SELECT * FROM tidak_ada');
+
+    // 1146 = tabel tidak dikenal. Dibedakan dari kegagalan koneksi.
+    expect(hasil.ok).toBe(false);
+    expect(hasil.reasonKey).toBe('error.query_failed');
+    expect(hasil.detail).toBe('mysql_1146');
+  });
+
+  it('TC-DRV-28 — hasil dipotong pada batas, dan pemotongannya dinyatakan', async () => {
+    const baris = Array.from({ length: 9 }, (_, i) => packet(lenenc(`baris-${i}`), 5 + i));
+    const fake = await tcpFakeScript(greeting(), [
+      OK,
+      Buffer.concat([packet(Buffer.from([0x01]), 1), columnDef('nama', 2), eof(3), ...baris, eof(20)]),
+    ]);
+
+    const hasil = await runQuery(input(fake.port), 'SELECT nama FROM banyak', 4);
+
+    expect(hasil.rows).toHaveLength(4);
+    expect(hasil.truncated).toBe(true);
+  });
+
+  it('TC-DRV-29 — kredensial tidak pernah muncul di hasil query', async () => {
+    const fake = await tcpFakeScript(greeting(), [
+      OK,
+      Buffer.concat([packet(Buffer.from([0x01]), 1), columnDef('a', 2), eof(3), eof(4)]),
+    ]);
+
+    const hasil = await runQuery(input(fake.port), 'SELECT a FROM t');
+
+    // Hasil ini tersimpan di riwayat sinkronisasi dan terbaca operator.
+    expect(JSON.stringify(hasil)).not.toContain('sandi-mysql');
   });
 });

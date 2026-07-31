@@ -1163,3 +1163,89 @@ describe('Ingest sensor lewat HTTP', () => {
     expect(after.status).toBe(403);
   });
 });
+
+/**
+ * Penarikan data dari basis data eksternal lewat HTTP.
+ *
+ * Yang diuji di sini bukan protokolnya — itu sudah dibuktikan `drivers.test.ts` dan
+ * `connection-sync.test.ts` — melainkan bahwa rutenya terpasang dan bahwa kegagalan
+ * benar-benar terbaca sebagai kegagalan oleh klien HTTP. Rute yang menjawab 200 berisi
+ * kata "error" di dalam badannya akan dianggap berhasil oleh setiap pemanggil yang
+ * memeriksa status.
+ */
+describe('Sinkronisasi koneksi lewat HTTP', () => {
+  it('TC-E2E-58 — koneksi tanpa query ditolak dengan alasan yang terbaca', async () => {
+    const dibuat = await request(app)
+      .post('/api/v1/connections')
+      .set(...auth())
+      .send({
+        name: 'Gudang Tanpa Query',
+        kind: 'postgresql',
+        host: '127.0.0.1',
+        port: 1,
+        databaseName: 'analitik',
+        username: 'vantik',
+        secrets: { password: 'sandi' },
+      });
+    expect(dibuat.status).toBe(201);
+
+    const hasil = await request(app)
+      .post(`/api/v1/connections/${dibuat.body.id}/sync`)
+      .set(...auth())
+      .send({});
+
+    // 400 dengan kunci pesan, bukan 200 berisi kata "error".
+    expect(hasil.status).toBe(400);
+    expect(hasil.body.error.key).toBe('error.query_not_configured');
+  });
+
+  it('TC-E2E-59 — query yang menulis ditolak sebelum menyentuh basis data', async () => {
+    const dibuat = await request(app)
+      .post('/api/v1/connections')
+      .set(...auth())
+      .send({
+        name: 'Gudang Berbahaya',
+        kind: 'postgresql',
+        host: '127.0.0.1',
+        port: 1,
+        databaseName: 'analitik',
+        username: 'vantik',
+        secrets: { password: 'sandi' },
+        options: { query: 'DROP TABLE pelanggan' },
+      });
+
+    const hasil = await request(app)
+      .post(`/api/v1/connections/${dibuat.body.id}/sync`)
+      .set(...auth())
+      .send({});
+
+    // Port 1 tidak ada yang mendengarkan: bila gerbangnya tidak menahan lebih dulu, yang
+    // muncul adalah kegagalan koneksi, bukan kunci pesan ini.
+    expect(hasil.status).toBe(400);
+    expect(hasil.body.error.key).toBe('error.query_select_only');
+  });
+
+  it('TC-E2E-60 — riwayat sinkronisasi menyertakan alasan kegagalannya', async () => {
+    const dibuat = await request(app)
+      .post('/api/v1/connections')
+      .set(...auth())
+      .send({
+        name: 'Gudang Mati',
+        kind: 'postgresql',
+        host: '127.0.0.1',
+        port: 1,
+        databaseName: 'analitik',
+        username: 'vantik',
+        secrets: { password: 'sandi' },
+        options: { query: 'SELECT 1' },
+      });
+
+    await request(app).post(`/api/v1/connections/${dibuat.body.id}/sync`).set(...auth()).send({});
+
+    const riwayat = await request(app).get(`/api/v1/connections/${dibuat.body.id}/history`).set(...auth());
+    expect(riwayat.status).toBe(200);
+    // Tanpa `message_key`, operator hanya melihat "gagal" dan harus menebak.
+    expect(riwayat.body.runs[0]).toHaveProperty('message_key');
+    expect(JSON.stringify(riwayat.body)).not.toContain('sandi');
+  });
+});

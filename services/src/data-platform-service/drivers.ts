@@ -199,90 +199,119 @@ function pgErrorReason(fields: Record<string, string>): string {
   }
 }
 
+/**
+ * Jabat tangan PostgreSQL sampai ReadyForQuery.
+ *
+ * Dipisahkan supaya uji koneksi dan penarikan data memakai jalur autentikasi yang SAMA.
+ * Menduplikasinya berarti keduanya dapat menyimpang — mis. tombol "Uji Koneksi" berhasil
+ * sementara sinkronisasi gagal pada server yang sama, kegagalan yang mustahil dijelaskan
+ * kepada orang yang baru saja melihat tanda centang hijau.
+ *
+ * Mengembalikan `null` bila berhasil; bila gagal, mengembalikan `ProbeResult` yang sudah
+ * berisi alasannya.
+ */
+async function pgHandshake(
+  wire: Wire,
+  user: string,
+  password: string,
+  database: string,
+  started: number,
+): Promise<ProbeResult | null> {
+  wire.write(pgStartup(user, database));
+
+  const clientNonce = randomBytes(18).toString('base64');
+  let serverFirst = '';
+
+  for (;;) {
+    const frame = await wire.read(pgFrame);
+    const type = String.fromCharCode(frame[0]!);
+    const body = frame.subarray(5);
+
+    if (type === 'E') {
+      const fields = pgErrorFields(body);
+      return { ok: false, reasonKey: pgErrorReason(fields), detail: fields.C, latencyMs: Date.now() - started };
+    }
+
+    if (type === 'R') {
+      const auth = body.readUInt32BE(0);
+      if (auth === 0) continue; // AuthenticationOk — tunggu ReadyForQuery
+      if (auth === 3) {
+        wire.write(pgMessage('p', Buffer.concat([Buffer.from(password, 'utf8'), Buffer.alloc(1)])));
+        continue;
+      }
+      if (auth === 5) {
+        // MD5: md5(md5(password + user) + salt)
+        const salt = body.subarray(4, 8);
+        const inner = createHash('md5').update(password + user, 'utf8').digest('hex');
+        const outer = createHash('md5').update(Buffer.concat([Buffer.from(inner, 'utf8'), salt])).digest('hex');
+        wire.write(pgMessage('p', Buffer.concat([Buffer.from(`md5${outer}`, 'utf8'), Buffer.alloc(1)])));
+        continue;
+      }
+      if (auth === 10) {
+        // SASL: pilih SCRAM-SHA-256 bila ditawarkan.
+        const mechanisms = body.subarray(4).toString('utf8').split('\0').filter(Boolean);
+        if (!mechanisms.includes('SCRAM-SHA-256')) {
+          return {
+            ok: false,
+            reasonKey: 'error.connection_auth_unsupported',
+            detail: mechanisms.join(','),
+            latencyMs: Date.now() - started,
+          };
+        }
+        const first = Buffer.from(`n,,n=,r=${clientNonce}`, 'utf8');
+        const len = Buffer.alloc(4);
+        len.writeInt32BE(first.length);
+        wire.write(pgMessage('p', Buffer.concat([Buffer.from('SCRAM-SHA-256\0', 'utf8'), len, first])));
+        continue;
+      }
+      if (auth === 11) {
+        serverFirst = body.subarray(4).toString('utf8');
+        const { message } = scramClientFinal(password, clientNonce, serverFirst);
+        wire.write(pgMessage('p', message));
+        continue;
+      }
+      if (auth === 12) continue; // server-final; keberhasilan ditandai ReadyForQuery
+      return {
+        ok: false,
+        reasonKey: 'error.connection_auth_unsupported',
+        detail: `auth_${auth}`,
+        latencyMs: Date.now() - started,
+      };
+    }
+
+    // ReadyForQuery: jabat tangan selesai dan basis datanya ada.
+    if (type === 'Z') return null;
+    // S (ParameterStatus), K (BackendKeyData), N (Notice) diabaikan.
+  }
+}
+
+/** ErrorResponse: pasangan kode-huruf + nilai, diakhiri byte nol. */
+function pgErrorFields(body: Buffer): Record<string, string> {
+  const fields: Record<string, string> = {};
+  let offset = 0;
+  while (offset < body.length && body[offset] !== 0) {
+    const key = String.fromCharCode(body[offset]!);
+    const end = body.indexOf(0, offset + 1);
+    fields[key] = body.toString('utf8', offset + 1, end);
+    offset = end + 1;
+  }
+  return fields;
+}
+
 async function probePostgres(input: ProbeInput): Promise<ProbeResult> {
   const started = Date.now();
-  const host = input.host!;
-  const port = input.port ?? 5432;
-  const user = input.username!;
-  const password = input.secrets.password ?? '';
   let socket: Socket | null = null;
 
   try {
-    socket = await openSocket(host, port);
-    const wire = new Wire(socket);
-    wire.write(pgStartup(user, input.databaseName!));
-
-    const clientNonce = randomBytes(18).toString('base64');
-    let serverFirst = '';
-
-    for (;;) {
-      const frame = await wire.read(pgFrame);
-      const type = String.fromCharCode(frame[0]!);
-      const body = frame.subarray(5);
-
-      if (type === 'E') {
-        // ErrorResponse: pasangan kode-huruf + nilai, diakhiri byte nol.
-        const fields: Record<string, string> = {};
-        let offset = 0;
-        while (offset < body.length && body[offset] !== 0) {
-          const key = String.fromCharCode(body[offset]!);
-          const end = body.indexOf(0, offset + 1);
-          fields[key] = body.toString('utf8', offset + 1, end);
-          offset = end + 1;
-        }
-        return { ok: false, reasonKey: pgErrorReason(fields), detail: fields.C, latencyMs: Date.now() - started };
-      }
-
-      if (type === 'R') {
-        const auth = body.readUInt32BE(0);
-        if (auth === 0) continue; // AuthenticationOk — tunggu ReadyForQuery
-        if (auth === 3) {
-          wire.write(pgMessage('p', Buffer.concat([Buffer.from(password, 'utf8'), Buffer.alloc(1)])));
-          continue;
-        }
-        if (auth === 5) {
-          // MD5: md5(md5(password + user) + salt)
-          const salt = body.subarray(4, 8);
-          const inner = createHash('md5').update(password + user, 'utf8').digest('hex');
-          const outer = createHash('md5').update(Buffer.concat([Buffer.from(inner, 'utf8'), salt])).digest('hex');
-          wire.write(pgMessage('p', Buffer.concat([Buffer.from(`md5${outer}`, 'utf8'), Buffer.alloc(1)])));
-          continue;
-        }
-        if (auth === 10) {
-          // SASL: pilih SCRAM-SHA-256 bila ditawarkan.
-          const mechanisms = body.subarray(4).toString('utf8').split('\0').filter(Boolean);
-          if (!mechanisms.includes('SCRAM-SHA-256')) {
-            return { ok: false, reasonKey: 'error.connection_auth_unsupported', detail: mechanisms.join(','), latencyMs: Date.now() - started };
-          }
-          const first = Buffer.from(`n,,n=,r=${clientNonce}`, 'utf8');
-          const payload = Buffer.concat([
-            Buffer.from('SCRAM-SHA-256\0', 'utf8'),
-            (() => {
-              const len = Buffer.alloc(4);
-              len.writeInt32BE(first.length);
-              return len;
-            })(),
-            first,
-          ]);
-          wire.write(pgMessage('p', payload));
-          continue;
-        }
-        if (auth === 11) {
-          serverFirst = body.subarray(4).toString('utf8');
-          const { message } = scramClientFinal(password, clientNonce, serverFirst);
-          wire.write(pgMessage('p', message));
-          continue;
-        }
-        if (auth === 12) continue; // server-final; keberhasilan ditandai ReadyForQuery
-        return { ok: false, reasonKey: 'error.connection_auth_unsupported', detail: `auth_${auth}`, latencyMs: Date.now() - started };
-      }
-
-      if (type === 'Z') {
-        // ReadyForQuery: jabat tangan selesai dan basis datanya ada.
-        return { ok: true, latencyMs: Date.now() - started, detail: 'postgresql' };
-      }
-      // S (ParameterStatus), K (BackendKeyData), N (Notice) diabaikan.
-    }
+    socket = await openSocket(input.host!, input.port ?? 5432);
+    const failure = await pgHandshake(
+      new Wire(socket),
+      input.username!,
+      input.secrets.password ?? '',
+      input.databaseName!,
+      started,
+    );
+    return failure ?? { ok: true, latencyMs: Date.now() - started, detail: 'postgresql' };
   } catch (error) {
     return { ok: false, reasonKey: networkReason(error), latencyMs: Date.now() - started };
   } finally {
@@ -309,15 +338,18 @@ function mysqlNativePassword(password: string, salt: Buffer): Buffer {
   return out;
 }
 
-async function probeMysql(input: ProbeInput): Promise<ProbeResult> {
-  const started = Date.now();
-  const host = input.host!;
-  const port = input.port ?? 3306;
-  let socket: Socket | null = null;
-
-  try {
-    socket = await openSocket(host, port);
-    const wire = new Wire(socket);
+/**
+ * Jabat tangan MySQL sampai OK packet.
+ *
+ * Dipisahkan dengan alasan yang sama seperti `pgHandshake`: uji koneksi dan penarikan data
+ * wajib memakai jalur autentikasi yang SAMA, supaya keduanya tidak dapat menyimpang.
+ *
+ * Mengembalikan `ProbeResult` penuh — termasuk versi server pada keberhasilan. Versi itu
+ * ditampilkan operator setelah uji koneksi; membuangnya berarti layar kehilangan satu-satunya
+ * petunjuk tentang server mana yang sebenarnya dihubungi.
+ */
+async function mysqlHandshake(wire: Wire, input: ProbeInput, started: number): Promise<ProbeResult> {
+  {
     const handshake = await wire.read(mysqlFrame);
     const body = handshake.subarray(4);
 
@@ -398,6 +430,16 @@ async function probeMysql(input: ProbeInput): Promise<ProbeResult> {
       return { ok: false, reasonKey, detail: `mysql_${code}`, latencyMs: Date.now() - started };
     }
     return { ok: false, reasonKey: 'error.connection_auth_unsupported', detail: `status_${status}`, latencyMs: Date.now() - started };
+  }
+}
+
+async function probeMysql(input: ProbeInput): Promise<ProbeResult> {
+  const started = Date.now();
+  let socket: Socket | null = null;
+
+  try {
+    socket = await openSocket(input.host!, input.port ?? 3306);
+    return await mysqlHandshake(new Wire(socket), input, started);
   } catch (error) {
     return { ok: false, reasonKey: networkReason(error), latencyMs: Date.now() - started };
   } finally {
@@ -517,6 +559,283 @@ async function probeGoogleSheets(input: ProbeInput): Promise<ProbeResult> {
  * berhasil di sana akan menjadi kebohongan yang paling mahal dari semuanya, karena baru
  * ketahuan ketika seseorang mengandalkan datanya.
  */
+/* ================= Penarikan data ================= */
+
+/**
+ * Batas jumlah baris satu penarikan.
+ *
+ * Bukan angka hiasan: hasilnya dikumpulkan di memori sebelum masuk basis data, dan aplikasi
+ * ini berjalan di shared hosting dengan batas memori 512MB–1GB. Satu `SELECT` tanpa `WHERE`
+ * pada tabel berisi jutaan baris akan mematikan prosesnya — dan yang mati bukan hanya
+ * sinkronisasi itu, melainkan seluruh aplikasi untuk semua penyewa.
+ */
+export const MAX_SYNC_ROWS = 50_000;
+
+/** Batas waktu satu penarikan. Lebih panjang dari uji koneksi: query memang butuh waktu. */
+export const QUERY_TIMEOUT_MS = 60_000;
+
+export interface QueryResult {
+  ok: boolean;
+  reasonKey?: string;
+  detail?: string;
+  columns: string[];
+  rows: string[][];
+  /** Benar bila hasil dipotong pada MAX_SYNC_ROWS — dinyatakan, bukan didiamkan. */
+  truncated: boolean;
+  latencyMs?: number;
+}
+
+const EMPTY: Omit<QueryResult, 'ok'> = { columns: [], rows: [], truncated: false };
+
+/**
+ * Hanya SELECT yang boleh dijalankan.
+ *
+ * Kredensial koneksi sering diberi hak tulis oleh administrator basis data yang sedang
+ * terburu-buru. Bila sebuah kolom query dapat memuat `DELETE` atau `DROP`, maka layar
+ * konfigurasi di aplikasi ini menjadi jalan menghapus isi basis data produksi orang lain —
+ * dengan kredensial mereka sendiri, sehingga jejaknya pun menunjuk ke mereka.
+ *
+ * Pemeriksaannya sengaja KETAT dan menolak apa pun yang meragukan: satu pernyataan, diawali
+ * `SELECT` atau `WITH`, tanpa titik koma di tengah, tanpa komentar. Query sah yang tertolak
+ * hanya merepotkan; query berbahaya yang lolos tidak dapat ditarik kembali.
+ */
+export function assertReadOnlyQuery(sql: string): { ok: true } | { ok: false; reasonKey: string } {
+  const trimmed = sql.trim().replace(/;\s*$/, '');
+  if (trimmed === '') return { ok: false, reasonKey: 'error.query_empty' };
+
+  // Komentar dapat menyembunyikan pernyataan kedua dari mata pembaca, bukan dari server.
+  if (/--|\/\*|\*\//.test(trimmed)) return { ok: false, reasonKey: 'error.query_comment_not_allowed' };
+  // Titik koma yang TERSISA setelah yang di ujung dibuang berarti ada lebih dari satu
+  // pernyataan — jalur klasik menyelipkan perintah tulis di belakang SELECT yang tampak sah.
+  if (trimmed.includes(';')) return { ok: false, reasonKey: 'error.query_multiple_statements' };
+  if (!/^(select|with)\s/i.test(trimmed)) return { ok: false, reasonKey: 'error.query_select_only' };
+  // `WITH ... AS (INSERT ...) SELECT` benar-benar menulis di PostgreSQL, dan diawali `WITH`.
+  if (/\b(insert|update|delete|merge|drop|alter|create|truncate|grant|revoke|call|do)\b/i.test(trimmed)) {
+    return { ok: false, reasonKey: 'error.query_select_only' };
+  }
+  return { ok: true };
+}
+
+/* ----- PostgreSQL ----- */
+
+async function queryPostgres(input: ProbeInput, sql: string, limit: number): Promise<QueryResult> {
+  const started = Date.now();
+  let socket: Socket | null = null;
+
+  try {
+    socket = await openSocket(input.host!, input.port ?? 5432);
+    socket.setTimeout(QUERY_TIMEOUT_MS, () => socket?.destroy(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })));
+    const wire = new Wire(socket);
+
+    const failure = await pgHandshake(
+      wire,
+      input.username!,
+      input.secrets.password ?? '',
+      input.databaseName!,
+      started,
+    );
+    if (failure) return { ...EMPTY, ok: false, reasonKey: failure.reasonKey, detail: failure.detail };
+
+    wire.write(pgMessage('Q', Buffer.from(`${sql}\0`, 'utf8')));
+
+    let columns: string[] = [];
+    const rows: string[][] = [];
+    let truncated = false;
+
+    for (;;) {
+      const frame = await wire.read(pgFrame);
+      const type = String.fromCharCode(frame[0]!);
+      const body = frame.subarray(5);
+
+      if (type === 'T') {
+        // RowDescription: jumlah kolom, lalu nama diakhiri NUL diikuti 18 byte metadata.
+        const count = body.readUInt16BE(0);
+        const names: string[] = [];
+        let offset = 2;
+        for (let i = 0; i < count; i++) {
+          const end = body.indexOf(0, offset);
+          names.push(body.toString('utf8', offset, end));
+          offset = end + 1 + 18;
+        }
+        columns = names;
+        continue;
+      }
+
+      if (type === 'D') {
+        // DataRow: panjang -1 berarti NULL — dibedakan dari string kosong, karena keduanya
+        // punya arti berbeda di hampir setiap dataset.
+        const count = body.readUInt16BE(0);
+        const values: string[] = [];
+        let offset = 2;
+        for (let i = 0; i < count; i++) {
+          const length = body.readInt32BE(offset);
+          offset += 4;
+          if (length < 0) {
+            values.push('');
+            continue;
+          }
+          values.push(body.toString('utf8', offset, offset + length));
+          offset += length;
+        }
+        if (rows.length < limit) rows.push(values);
+        else truncated = true;
+        continue;
+      }
+
+      if (type === 'E') {
+        const fields = pgErrorFields(body);
+        return {
+          ...EMPTY,
+          ok: false,
+          reasonKey: 'error.query_failed',
+          detail: fields.C ? `pg_${fields.C}` : undefined,
+        };
+      }
+
+      // ReadyForQuery menutup rangkaian, termasuk setelah CommandComplete.
+      if (type === 'Z') break;
+      // C (CommandComplete), N (Notice), S (ParameterStatus) tidak menambah baris.
+    }
+
+    return { ok: true, columns, rows, truncated, latencyMs: Date.now() - started };
+  } catch (error) {
+    return { ...EMPTY, ok: false, reasonKey: networkReason(error), latencyMs: Date.now() - started };
+  } finally {
+    socket?.destroy();
+  }
+}
+
+/* ----- MySQL ----- */
+
+/** Bilangan berpanjang-variabel MySQL (§ length-encoded integer). */
+function lenencInt(buf: Buffer, offset: number): { value: number; next: number } | null {
+  const first = buf[offset];
+  if (first === undefined) return null;
+  if (first < 0xfb) return { value: first, next: offset + 1 };
+  if (first === 0xfc) return { value: buf.readUInt16LE(offset + 1), next: offset + 3 };
+  if (first === 0xfd) return { value: buf.readUIntLE(offset + 1, 3), next: offset + 4 };
+  if (first === 0xfe) return { value: Number(buf.readBigUInt64LE(offset + 1)), next: offset + 9 };
+  return null; // 0xfb = NULL, ditangani pemanggil
+}
+
+/** String berpanjang-variabel. `null` berarti NULL SQL, bukan string kosong. */
+function lenencString(buf: Buffer, offset: number): { value: string | null; next: number } {
+  if (buf[offset] === 0xfb) return { value: null, next: offset + 1 };
+  const length = lenencInt(buf, offset);
+  if (!length) return { value: null, next: offset + 1 };
+  return {
+    value: buf.toString('utf8', length.next, length.next + length.value),
+    next: length.next + length.value,
+  };
+}
+
+/** Paket EOF: penanda 0xfe dengan muatan pendek — dibedakan dari lenenc-int 0xfe. */
+function isEof(payload: Buffer): boolean {
+  return payload[0] === 0xfe && payload.length < 9;
+}
+
+async function queryMysql(input: ProbeInput, sql: string, limit: number): Promise<QueryResult> {
+  const started = Date.now();
+  let socket: Socket | null = null;
+
+  try {
+    socket = await openSocket(input.host!, input.port ?? 3306);
+    socket.setTimeout(QUERY_TIMEOUT_MS, () => socket?.destroy(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })));
+    const wire = new Wire(socket);
+
+    const handshake = await mysqlHandshake(wire, input, started);
+    if (!handshake.ok) return { ...EMPTY, ok: false, reasonKey: handshake.reasonKey, detail: handshake.detail };
+
+    // COM_QUERY: 0x03 diikuti teks query. Nomor urut kembali ke 0 pada perintah baru.
+    const payload = Buffer.concat([Buffer.from([0x03]), Buffer.from(sql, 'utf8')]);
+    const packet = Buffer.alloc(4 + payload.length);
+    packet.writeUIntLE(payload.length, 0, 3);
+    packet.writeUInt8(0, 3);
+    payload.copy(packet, 4);
+    wire.write(packet);
+
+    const first = (await wire.read(mysqlFrame)).subarray(4);
+    if (first[0] === 0xff) {
+      return { ...EMPTY, ok: false, reasonKey: 'error.query_failed', detail: `mysql_${first.readUInt16LE(1)}` };
+    }
+    if (first[0] === 0x00) {
+      // OK packet: pernyataan tanpa hasil. Tidak seharusnya terjadi — hanya SELECT yang
+      // sampai ke sini — tetapi dijawab jujur alih-alih dibiarkan menggantung.
+      return { ok: true, columns: [], rows: [], truncated: false, latencyMs: Date.now() - started };
+    }
+
+    const columnCount = lenencInt(first, 0)?.value ?? 0;
+    const columns: string[] = [];
+    for (let i = 0; i < columnCount; i++) {
+      const def = (await wire.read(mysqlFrame)).subarray(4);
+      // catalog, schema, table, org_table, name — nama adalah string lenenc KELIMA.
+      let offset = 0;
+      let name: string | null = null;
+      for (let field = 0; field < 5; field++) {
+        const read = lenencString(def, offset);
+        offset = read.next;
+        name = read.value;
+      }
+      columns.push(name ?? `kolom_${i + 1}`);
+    }
+
+    // EOF penutup daftar kolom (CLIENT_DEPRECATE_EOF tidak diminta, jadi paket ini ada).
+    const afterColumns = (await wire.read(mysqlFrame)).subarray(4);
+    if (!isEof(afterColumns)) {
+      return { ...EMPTY, ok: false, reasonKey: 'error.query_failed', detail: 'unexpected_packet' };
+    }
+
+    const rows: string[][] = [];
+    let truncated = false;
+    for (;;) {
+      const body = (await wire.read(mysqlFrame)).subarray(4);
+      if (isEof(body)) break;
+      if (body[0] === 0xff) {
+        return { ...EMPTY, ok: false, reasonKey: 'error.query_failed', detail: `mysql_${body.readUInt16LE(1)}` };
+      }
+
+      const values: string[] = [];
+      let offset = 0;
+      for (let i = 0; i < columnCount; i++) {
+        const read = lenencString(body, offset);
+        values.push(read.value ?? '');
+        offset = read.next;
+      }
+      if (rows.length < limit) rows.push(values);
+      else truncated = true;
+    }
+
+    return { ok: true, columns, rows, truncated, latencyMs: Date.now() - started };
+  } catch (error) {
+    return { ...EMPTY, ok: false, reasonKey: networkReason(error), latencyMs: Date.now() - started };
+  } finally {
+    socket?.destroy();
+  }
+}
+
+/**
+ * Menjalankan satu query baca terhadap koneksi eksternal.
+ *
+ * Hasilnya sengaja berupa TEKS, sama seperti pembaca CSV dan XLSX. Deteksi tipe kolom sudah
+ * ada di jalur dataset dan telah teruji; menebak tipe di sini berarti dua tempat yang harus
+ * sepakat — dan diam-diam menyimpang.
+ */
+export async function runQuery(input: ProbeInput, sql: string, limit = MAX_SYNC_ROWS): Promise<QueryResult> {
+  const guard = assertReadOnlyQuery(sql);
+  if (!guard.ok) return { ...EMPTY, ok: false, reasonKey: guard.reasonKey };
+
+  const capped = Math.max(1, Math.min(limit, MAX_SYNC_ROWS));
+  switch (input.kind) {
+    case 'postgresql':
+      return queryPostgres(input, sql, capped);
+    case 'mysql':
+      return queryMysql(input, sql, capped);
+    default:
+      // REST, Google Sheets, dan Oracle tidak berbicara SQL lewat jalur ini.
+      return { ...EMPTY, ok: false, reasonKey: 'error.connection_driver_unavailable' };
+  }
+}
+
 export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
   switch (input.kind) {
     case 'rest_api':

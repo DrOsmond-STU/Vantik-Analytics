@@ -811,6 +811,33 @@ export function createApp(options: AppOptions = {}): VantikApp {
     res.json({ ok: true });
   });
 
+  /**
+   * Menarik data dari basis datanya, lalu menyerapnya menjadi dataset.
+   *
+   * Query disimpan di konfigurasi koneksi (`options.query`), bukan dikirim pemanggil.
+   * Mengirimkannya per-permintaan berarti siapa pun yang memegang `connection:sync` dapat
+   * menjalankan query pilihannya sendiri terhadap basis data pelanggan — menjadikan modul
+   * ini sebuah konsol SQL, bukan sebuah integrasi. Yang boleh mengubah query adalah orang
+   * yang boleh mengubah koneksinya (`connection:write`).
+   */
+  api.post(
+    '/connections/:id/sync',
+    asyncRoute(async (req, res) => {
+      const ctx = requireContext(req);
+      const datasets = new DatasetService(ctx, new MeteringService(ctx));
+
+      const result = await connectionsOf(req).syncFromSource(req.params.id!, (csv, name) => {
+        datasets.upload({
+          filename: `${name.replace(/[^\w.-]+/g, '-')}.csv`,
+          content: Buffer.from(csv, 'utf8'),
+          name,
+        });
+      });
+
+      res.json(result);
+    }),
+  );
+
   api.get('/connections/:id/history', (req, res) => {
     res.json({ runs: connectionsOf(req).syncHistory(req.params.id!) });
   });
