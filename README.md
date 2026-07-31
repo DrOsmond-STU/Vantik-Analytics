@@ -45,7 +45,7 @@ dilakukan — perilaku yang disengaja (SECURITY.md Bagian 4), bukan kerusakan.
 
 ```bash
 npm run build         # typecheck API + kompilasi ke JS + build web app
-npm test              # 617 test (570 backend + 47 komponen web)
+npm test              # 635 test (588 backend + 47 komponen web)
 npm run test:coverage # backend dengan ambang cakupan
 npm run test:web      # hanya uji komponen/DOM web app
 ```
@@ -157,8 +157,6 @@ supaya operator mengisinya sendiri tanpa menyunting satu baris kode pun.
 
 Dinyatakan terbuka, bukan disembunyikan:
 
-- **Driver koneksi eksternal nyata** — `ConnectionProbe` memvalidasi bentuk konfigurasi;
-  implementasi driver PostgreSQL/MySQL/Oracle/REST dipasang lewat antarmuka yang sama.
 - **SSO SAML/OIDC** — skema & kolom `auth_provider` sudah ada; alur federasi belum. (MFA berbasis TOTP **sudah** ada — lihat tabel kontrol keamanan.)
 - **Ingest MQTT** — Digital Twin menerima pembacaan sensor lewat REST; gateway MQTT belum.
 - **Ekspor PDF biner** — `renderDocument()` mengembalikan struktur dokumen; render PDF
@@ -218,6 +216,7 @@ pelanggaran baru di masa depan.
 
 | Berkas | Cakupan |
 |---|---|
+| `tests/drivers.test.ts` | Uji koneksi yang benar-benar menyambung, terhadap server tiruan yang mengucapkan protokol PostgreSQL v3 dan MySQL v10: jawaban MD5 dan `mysql_native_password` dihitung sesuai rumusnya, kata sandi salah dibedakan dari basis data hilang dan dari host tak terjangkau, Oracle dijawab tidak tersedia alih-alih berhasil, dan kredensial tidak pernah muncul di hasil uji |
 | `tests/xlsx.test.ts` | Pembacaan XLSX terhadap berkas ZIP+XML **sungguhan** yang dibangun uji itu sendiri: sel kosong di tengah baris tidak menggeser kolom, tanggal serial memakai epoch Excel termasuk bug tahun kabisat 1900, formula dibaca nilai hasilnya, berkas terenkripsi dikatakan terenkripsi alih-alih rusak, dan arsip yang mengaku membongkar 1 GB ditolak sebelum dibongkar |
 | `tests/security.test.ts` | Isolasi tenant (**memblokir rilis**), matriks negatif RBAC, RLS, immutability audit |
 | `tests/modules.test.ts` | TC-DS-01…08 dari PRD 6.11, DQ proporsi persis, koneksi, KPI, alert, embed, device, twin, kuota |

@@ -4,6 +4,7 @@
  * Zero Trust (SECURITY.md Bagian 2): setiap koneksi ke sumber data eksternal
  * diperlakukan tidak tepercaya sampai diverifikasi dan dienkripsi.
  */
+import { probeConnection } from './drivers.ts';
 import { newId, nowIso } from '../platform/db.ts';
 import { ConflictError, NotFoundError, ValidationError } from '../platform/errors.ts';
 import { open, seal, type KeyRing } from '../platform/crypto.ts';
@@ -83,6 +84,16 @@ export interface ConnectionProbe {
  * atau pesan kesalahan yang memuat isi `secrets`.
  */
 export class ConfigurationProbe implements ConnectionProbe {
+  /**
+   * `network` menyalakan sambungan sungguhan setelah bentuk konfigurasinya lolos.
+   *
+   * Bawaannya MENYALA. Uji koneksi yang hanya memeriksa bentuk menjawab "berhasil" untuk
+   * host yang tidak ada dan kata sandi yang salah — operator melihat centang hijau lalu
+   * berhenti mencari. Dimatikan hanya oleh pengujian yang memang tidak boleh menyentuh
+   * jaringan (TESTING.md Bagian 11).
+   */
+  constructor(private readonly network = true) {}
+
   async test(input: Parameters<ConnectionProbe['test']>[0]): Promise<{ ok: boolean; reasonKey?: string; latencyMs?: number }> {
     const started = Date.now();
     const requiredSecret: Record<ConnectionKind, string[]> = {
@@ -105,6 +116,9 @@ export class ConfigurationProbe implements ConnectionProbe {
     for (const field of requiredSecret[input.kind]) {
       if (!input.secrets[field]) return { ok: false, reasonKey: 'error.connection_credential_required' };
     }
+
+    // Bentuknya benar. Sekarang buktikan bahwa sumbernya memang dapat dihubungi.
+    if (this.network) return probeConnection(input);
 
     return { ok: true, latencyMs: Date.now() - started };
   }

@@ -415,6 +415,46 @@ export const dictionary = {
     'Koneksi terkunci sementara setelah kegagalan autentikasi berulang.',
     'Connection temporarily locked after repeated authentication failures.',
   ],
+  'error.connection_host_unreachable': [
+    'Host tidak dapat ditemukan. Periksa ejaan alamatnya, dan pastikan namanya dapat diselesaikan dari server ini.',
+    'The host could not be found. Check the address spelling and that it resolves from this server.',
+  ],
+  'error.connection_refused': [
+    'Sambungan ditolak. Server ada tetapi tidak menerima koneksi di port itu — periksa portnya, dan apakah alamat IP server ini diizinkan.',
+    'Connection refused. The server exists but is not accepting connections on that port — check the port, and whether this server\u2019s IP is allowed.',
+  ],
+  'error.connection_timeout': [
+    'Sambungan tidak dijawab sampai batas waktu. Biasanya firewall yang membuang paket tanpa menolaknya.',
+    'The connection timed out. This usually means a firewall is dropping packets rather than refusing them.',
+  ],
+  'error.connection_reset': [
+    'Sambungan diputus server di tengah jalan.',
+    'The server closed the connection midway.',
+  ],
+  'error.connection_failed': [
+    'Sambungan gagal. Rinciannya ada di keterangan hasil uji.',
+    'The connection failed. See the test result detail.',
+  ],
+  'error.connection_credential_rejected': [
+    'Server dapat dihubungi, tetapi kredensialnya ditolak. Sambungannya benar — yang perlu diperbaiki nama pengguna atau kata sandinya.',
+    'The server was reachable but rejected the credentials. The connection itself is fine — the username or password needs fixing.',
+  ],
+  'error.connection_database_missing': [
+    'Server dapat dihubungi dan kredensialnya diterima, tetapi basis data dengan nama itu tidak ada.',
+    'The server was reachable and the credentials accepted, but no database with that name exists.',
+  ],
+  'error.connection_auth_unsupported': [
+    'Server memakai metode autentikasi yang belum didukung. Keterangan hasil uji menyebutkan metodenya.',
+    'The server uses an authentication method that is not supported yet. The test result detail names it.',
+  ],
+  'error.connection_credential_malformed': [
+    'Isi kredensial tidak dapat dibaca. Untuk Google Sheets, tempelkan berkas JSON service account apa adanya.',
+    'The credential content could not be read. For Google Sheets, paste the service account JSON as-is.',
+  ],
+  'error.connection_driver_unavailable': [
+    'Jenis sumber ini memerlukan pustaka yang tidak dapat dipasang di shared hosting. Oracle membutuhkan Oracle Instant Client — gunakan VPS, atau ekspor datanya lewat CSV/XLSX.',
+    'This source type requires a library that cannot be installed on shared hosting. Oracle needs the Oracle Instant Client — use a VPS, or export the data via CSV/XLSX.',
+  ],
   'error.connection_credential_required': ['Kredensial koneksi belum lengkap.', 'Connection credentials are incomplete.'],
   'error.connection_host_required': ['Host wajib diisi.', 'Host is required.'],
   'error.connection_url_required': ['URL wajib diisi.', 'URL is required.'],
