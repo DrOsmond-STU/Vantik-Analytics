@@ -1,0 +1,158 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.mountWebApp = mountWebApp;
+exports.startServer = startServer;
+/**
+ * Titik masuk layanan.
+ *
+ * Menyajikan API dan hasil build frontend dari satu proses, sehingga cukup satu
+ * aplikasi Node untuk dipasang — mendukung kebutuhan portabilitas PRD Bagian 7
+ * (on-premise, cloud, hybrid) dan menjadi syarat praktis agar dapat berjalan di
+ * shared hosting yang hanya mengizinkan satu aplikasi Node per domain.
+ */
+const node_fs_1 = require("node:fs");
+const node_path_1 = require("node:path");
+const express_1 = __importDefault(require("express"));
+const app_ts_1 = require("./app.js");
+const db_ts_1 = require("./platform/db.js");
+/**
+ * Kandidat lokasi berkas statis frontend, diperiksa berurutan.
+ *
+ * Tata letak deployment (`public/` di sebelah berkas startup) diperiksa LEBIH DULU
+ * daripada tata letak repositori kerja, karena itulah bentuk yang dipakai di server.
+ */
+function resolveWebRoot() {
+    // Sengaja hanya berbasis `process.cwd()`: `__dirname` tidak ada saat berkas ini
+    // dijalankan sebagai ESM di pengembangan, dan Passenger selalu menetapkan cwd ke
+    // direktori aplikasi.
+    const candidates = [
+        process.env.VANTIK_WEB_ROOT,
+        (0, node_path_1.join)(process.cwd(), 'public'),
+        (0, node_path_1.join)(process.cwd(), '..', 'frontend', 'web-app', 'dist'),
+        (0, node_path_1.join)(process.cwd(), 'frontend', 'web-app', 'dist'),
+    ].filter((c) => Boolean(c));
+    for (const candidate of candidates) {
+        const path = (0, node_path_1.resolve)(candidate);
+        if ((0, node_fs_1.existsSync)((0, node_path_1.join)(path, 'index.html')))
+            return path;
+    }
+    return null;
+}
+/** Lintasan yang ditangani API/embed/webhook — tidak boleh diambil alih frontend. */
+const API_PREFIX = /^\/(?:api|embed|webhooks|health|healthz)(?:\/|$)/;
+/**
+ * Apakah lintasan ini permintaan BERKAS, bukan rute aplikasi?
+ *
+ * Rute SPA tidak pernah memuat ekstensi (`/dasbor`, `/analitik/uji`), sedangkan
+ * permintaan berkas selalu memuatnya (`/package.json`, `/load-env.js`, `/vantik.db`).
+ */
+const LOOKS_LIKE_FILE = /\.[^/]*$/;
+/**
+ * Memasang penyajian frontend di atas aplikasi API.
+ *
+ * Diekspor terpisah dari `startServer()` supaya perilakunya dapat diuji tanpa
+ * mengikat porta — termasuk uji negatif bahwa berkas internal aplikasi
+ * (`package.json`, `load-env.js`, berkas basis data) TIDAK tersaji.
+ */
+function mountWebApp(app, webRoot) {
+    app.use(express_1.default.static(webRoot, {
+        // Aset ber-hash aman di-cache lama; index.html tidak boleh, agar rilis baru
+        // langsung terlihat tanpa pengguna harus memaksa muat ulang.
+        setHeaders: (res, path) => {
+            if (path.endsWith('index.html'))
+                res.setHeader('Cache-Control', 'no-cache');
+            else if (/\.[0-9a-f]{8,}\./i.test(path))
+                res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        },
+    }));
+    // Riwayat sisi klien: rute aplikasi dilayani index.html.
+    //
+    // Kriterianya BENTUK lintasan, bukan daftar-tolak nama berkas. Daftar-tolak sempat
+    // dipakai di sini dan selalu ketinggalan satu nama berkas; pembalikannya — hanya
+    // melayani yang berbentuk rute — tertutup secara desain. Permintaan berkas yang
+    // tidak ada di `public/` sudah melewati express.static, jadi satu-satunya jawaban
+    // benar adalah 404.
+    //
+    // Menyajikan index.html untuk lintasan berkas tidak membocorkan isinya, tetapi
+    // membuat daftar periksa pasca-pasang mustahil dibaca: penguji tidak dapat
+    // membedakan "terlindungi" dari "berkas benar-benar tersaji".
+    app.get(/.*/, (req, res, next) => {
+        if (API_PREFIX.test(req.path) || LOOKS_LIKE_FILE.test(req.path)) {
+            next();
+            return;
+        }
+        res.sendFile((0, node_path_1.join)(webRoot, 'index.html'));
+    });
+    app.use((0, app_ts_1.notFoundHandler)());
+}
+function startServer() {
+    // Passenger (cPanel) menetapkan PORT sendiri; jangan pernah dipatok di kode.
+    const port = Number(process.env.PORT ?? 4000);
+    // Alamat ikat. Bawaannya SELURUH antarmuka, karena itu yang diharapkan Passenger.
+    //
+    // Tetapi tidak semua shared hosting punya Passenger: sebagian menjalankan proses
+    // Node sendiri dan meneruskan lalu lintas lewat `RewriteRule … [P]` di .htaccess.
+    // Pada bentuk itu, mengikat seluruh antarmuka berarti port Node dapat dijangkau
+    // LANGSUNG dari internet — melewati pemaksaan HTTPS, penolakan berkas `.env`/`.db`,
+    // dan seluruh header keamanan yang dipasang Apache. `VANTIK_BIND_HOST=127.0.0.1`
+    // menutup jalan itu tanpa mengubah perilaku pemasangan berbasis Passenger.
+    const bindHost = process.env.VANTIK_BIND_HOST?.trim() || undefined;
+    const { app, db, scheduler } = (0, app_ts_1.createApp)();
+    // Penjadwal dimulai DI SINI, bukan di `createApp()`.
+    //
+    // `createApp()` dipakai ratusan kali oleh pengujian; memulai ticker di sana akan
+    // membuat setiap uji menjalankan pekerjaan latar dan saling mengganggu. Proses server
+    // sungguhan hanya satu, dan hanya di situ ticker punya arti.
+    scheduler.start();
+    const webRoot = resolveWebRoot();
+    if (webRoot)
+        mountWebApp(app, webRoot);
+    else
+        app.use((0, app_ts_1.notFoundHandler)());
+    const onListening = () => {
+        const where = bindHost ? `${bindHost}:${port}` : `port ${port}`;
+        console.log(`[vantik] siap · ${where} · driver ${db.driver} · data ${(0, db_ts_1.resolveDataDir)()}`);
+        if (!process.env.VANTIK_SCHEDULER_TOKEN) {
+            // Dinyatakan terbuka: tanpa cron eksternal, penjadwalan hanya berjalan selama
+            // proses hidup — dan Passenger mematikan proses yang idle.
+            console.log('[vantik] VANTIK_SCHEDULER_TOKEN belum diset — penjadwalan hanya lewat ticker dalam proses');
+        }
+        if (!webRoot) {
+            console.log('[vantik] build frontend tidak ditemukan — hanya API. Jalankan `npm run build`.');
+        }
+        if (process.env.NODE_ENV === 'production' && !process.env.VANTIK_MASTER_KEY) {
+            // Tidak akan sampai di sini: KeyRing.fromEnv() sudah menolak lebih dulu.
+            console.error('[vantik] VANTIK_MASTER_KEY belum diset (SECURITY.md Bagian 6)');
+        }
+    };
+    const server = bindHost ? app.listen(port, bindHost, onListening) : app.listen(port, onListening);
+    const shutdown = (signal) => {
+        console.log(`[vantik] ${signal} diterima, menutup`);
+        scheduler.stop();
+        server.close(() => {
+            db.close();
+            process.exit(0);
+        });
+    };
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    return server;
+}
+/**
+ * Apakah berkas ini titik masuk proses?
+ *
+ * `require.main === module` tidak dipakai karena hanya sah pada CommonJS, sedangkan
+ * berkas yang sama juga dijalankan sebagai ESM saat pengembangan. Titik masuk
+ * deployment (`app.js`) memanggil `startServer()` secara eksplisit, sehingga tidak
+ * ada kemungkinan server dijalankan dua kali.
+ */
+function isEntrypoint() {
+    const entry = process.argv[1] ?? '';
+    return /(?:^|[\\/])server\.(?:ts|js|cjs|mjs)$/.test(entry);
+}
+if (isEntrypoint())
+    startServer();
+//# sourceMappingURL=server.js.map

@@ -1,0 +1,39 @@
+<!doctype html>
+<!--
+  DESIGN.md Bagian 13: tema & bahasa diterapkan SEBELUM render pertama untuk
+  menghindari "flash of wrong theme". Nilai awal dibaca dari cache lokal, lalu
+  ditimpa preferensi profil (server-side) segera setelah sesi dimuat.
+-->
+<html lang="id" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Vantik Analytics</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem('vantik.theme');
+          var lang = localStorage.getItem('vantik.locale');
+          if (theme === 'dark' || theme === 'light') {
+            document.documentElement.setAttribute('data-theme', theme);
+          }
+          if (lang === 'id' || lang === 'en') document.documentElement.setAttribute('lang', lang);
+        } catch (e) {
+          /* penyimpanan lokal tidak tersedia — tetap pakai default */
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-B4ird0n4.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CASqhiSt.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

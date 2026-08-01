@@ -1,0 +1,21 @@
+{
+  "name": "vantik-analytics",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vantik Analytics — paket siap pasang (shared hosting / VPS)",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "seed": "node -r ./load-env.js server/platform/seed.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "cookie-parser": "^1.4.7"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.8.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

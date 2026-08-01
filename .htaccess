@@ -1,0 +1,43 @@
+# Vantik Analytics — proteksi berkas aplikasi di shared hosting.
+#
+# Diperlukan karena pada sebagian hosting direktori aplikasi berada DI DALAM
+# document root. Tanpa aturan ini, berkas basis data dan .env dapat diunduh lewat
+# HTTP — yang berarti kebocoran seluruh isi basis data, termasuk Log Aktivitas dan
+# hash kata sandi (SECURITY.md Bagian 6 & 9).
+#
+# cPanel "Setup Node.js App" menambahkan sendiri baris PassengerAppRoot dsb. di atas
+# berkas ini; JANGAN dihapus.
+
+# --- Tolak berkas sensitif -------------------------------------------------
+<FilesMatch "(^\.env|\.env\..*|\.db|\.db-wal|\.db-shm|\.map|package(-lock)?\.json|load-env\.js|app\.js)$">
+  Require all denied
+</FilesMatch>
+
+# --- Tolak seluruh direktori kode server ----------------------------------
+RedirectMatch 404 ^/server(/|$)
+RedirectMatch 404 ^/node_modules(/|$)
+
+# --- Tolak berkas basis data di mana pun ----------------------------------
+RedirectMatch 404 \.db($|-wal$|-shm$)
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  # Aplikasi utama tidak boleh disematkan; endpoint /embed menetapkan
+  # frame-ancestors sendiri per token dan dikecualikan di bawah.
+  Header always set X-Frame-Options "DENY"
+</IfModule>
+
+# Endpoint sematan memerlukan frame-ancestors per token dari aplikasi, bukan DENY.
+<IfModule mod_headers.c>
+  SetEnvIf Request_URI "^/embed/" VANTIK_EMBED=1
+  Header always unset X-Frame-Options env=VANTIK_EMBED
+</IfModule>
+
+# --- Paksa HTTPS ----------------------------------------------------------
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{HTTPS} !=on
+  RewriteCond %{HTTP:X-Forwarded-Proto} !https
+  RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+</IfModule>
