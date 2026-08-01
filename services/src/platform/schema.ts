@@ -1155,6 +1155,43 @@ const REMAINING_MAIN_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_tenants_approval ON tenants(approval_status);
     `,
   },
+  {
+    id: '0016_cms_site_content_and_plan_catalog',
+    sql: `
+      -- CMS: konten halaman publik dan katalog paket, dikelola dari antarmuka.
+      --
+      -- SENGAJA TANPA tenant_id. Halaman depan dan daftar harga adalah permukaan
+      -- PLATFORM, bukan milik salah satu tenant: pengunjung yang membacanya belum
+      -- punya tenant sama sekali. Memberinya tenant_id akan memaksa memilih tenant
+      -- mana yang "berhak" menentukan halaman depan — pertanyaan yang tidak punya
+      -- jawaban benar.
+      --
+      -- Konsekuensinya diterima secara sadar: penyuntingnya wajib berperan
+      -- Platform Operator, dan setiap perubahan tercatat di Log Aktivitas.
+
+      CREATE TABLE site_content (
+        content_key TEXT NOT NULL,
+        locale      TEXT NOT NULL,          -- 'id' | 'en'
+        value       TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        updated_by  TEXT,
+        PRIMARY KEY (content_key, locale)
+      );
+
+      -- Katalog paket TIDAK mendapat tabel baru.
+      --
+      -- Tabel plans sudah ada dan sudah direferensikan subscriptions.plan_code
+      -- lewat FOREIGN KEY. Menambah tabel kedua akan melahirkan dua katalog yang
+      -- perlahan berbeda — dan yang dipegang penagihan adalah yang lama. Jadi tabel
+      -- yang ada diperluas, bukan disaingi.
+      ALTER TABLE plans ADD COLUMN description TEXT;
+      -- Berhenti dijual TANPA menghapus: pelanggan yang sudah memakainya tetap harus
+      -- dapat dihitung hak aksesnya.
+      ALTER TABLE plans ADD COLUMN published  INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE plans ADD COLUMN updated_at TEXT;
+      ALTER TABLE plans ADD COLUMN updated_by TEXT;
+    `,
+  },
 ];
 
 /**

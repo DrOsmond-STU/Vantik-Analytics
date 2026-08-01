@@ -120,6 +120,34 @@ export const api = {
   /** Katalog paket untuk halaman depan & halaman berlangganan. */
   plans: (): Promise<PublicPlans> => request<PublicPlans>('/public/plans'),
 
+  /**
+   * Teks halaman depan yang ditimpa operator lewat CMS.
+   *
+   * Kegagalannya SENGAJA tidak diperlakukan sebagai kegagalan halaman: yang kembali
+   * adalah peta kosong, dan halaman depan jatuh ke kamus bawaan. Halaman pemasaran
+   * yang gagal tampil karena satu permintaan tambahan adalah harga yang tidak sepadan.
+   */
+  content: (locale: string): Promise<{ locale: string; content: Record<string, string> }> =>
+    request<{ locale: string; content: Record<string, string> }>(
+      `/public/content?locale=${encodeURIComponent(locale)}`,
+    ),
+
+  /* ------------------------------ CMS ------------------------------ */
+  cmsContent: (): Promise<CmsContent> => request<CmsContent>('/system/cms/content'),
+  cmsSetContent: (key: string, locale: string, value: string): Promise<CmsContent> =>
+    request<CmsContent>('/system/cms/content', {
+      method: 'PUT',
+      body: JSON.stringify({ key, locale, value }),
+    }),
+  cmsPlans: (): Promise<CmsPlans> => request<CmsPlans>('/system/cms/plans'),
+  cmsSavePlan: (code: string, body: unknown): Promise<CmsPlans> =>
+    request<CmsPlans>(`/system/cms/plans/${encodeURIComponent(code)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  cmsDeletePlan: (code: string): Promise<CmsPlans> =>
+    request<CmsPlans>(`/system/cms/plans/${encodeURIComponent(code)}`, { method: 'DELETE' }),
+
   /** Berlangganan: membuat ruang kerja baru berstatus uji coba. */
   signup: (input: {
     organisationName: string;
@@ -199,6 +227,29 @@ export interface PublicPlan {
   moduleCount: number;
   quotas: Record<string, number>;
   sortOrder: number;
+}
+
+export interface CmsContent {
+  editableKeys: string[];
+  overrides: { id: Record<string, string>; en: Record<string, string> };
+}
+
+export interface CmsPlan {
+  code: string;
+  name: string;
+  monthlyPrice: number;
+  annualPrice: number;
+  features: Record<string, boolean>;
+  quotas: Record<string, number>;
+  sortOrder: number;
+  published: boolean;
+  description: string | null;
+}
+
+export interface CmsPlans {
+  plans: CmsPlan[];
+  moduleKeys?: string[];
+  quotaKeys?: string[];
 }
 
 export interface PublicPlans {

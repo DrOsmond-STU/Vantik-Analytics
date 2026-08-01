@@ -132,6 +132,7 @@ export function LandingView(): JSX.Element {
   const { t, locale } = useApp();
   const [catalog, setCatalog] = useState<PublicPlans | null>(null);
   const [cycle, setCycle] = useState<BillingCycle>('monthly');
+  const [cms, setCms] = useState<Record<string, string>>({});
 
   useEffect(() => {
     // Kegagalan memuat katalog TIDAK mengosongkan halaman: penjelasan produk tetap
@@ -139,15 +140,35 @@ export function LandingView(): JSX.Element {
     api.plans().then(setCatalog).catch(() => setCatalog(null));
   }, []);
 
+  useEffect(() => {
+    // Sama alasannya: teks yang disunting operator adalah PENIMPAAN, jadi kegagalan
+    // memuatnya berarti halaman tampil dengan teks bawaan — bukan halaman kosong.
+    api.content(locale).then((r) => setCms(r.content)).catch(() => setCms({}));
+  }, [locale]);
+
+  /**
+   * Teks efektif: suntingan operator kalau ada, kamus kalau tidak.
+   *
+   * Urutannya penting. Kalau kamus yang menang, penyuntingan tidak berpengaruh; kalau
+   * penimpaan menyimpan seluruh kamus, kalimat yang diperbaiki di rilis berikutnya
+   * tidak akan pernah sampai ke halaman yang sudah pernah disunting sekali.
+   */
+  const tx = (key: string, vars?: Record<string, string | number>): string => {
+    const override = cms[key];
+    if (override === undefined) return t(key, vars);
+    if (!vars) return override;
+    return Object.entries(vars).reduce((out, [k, v]) => out.replaceAll(`{${k}}`, String(v)), override);
+  };
+
   const moduleCount = NAV_GROUPS.reduce((n, g) => n + g.items.length, 0);
 
   return (
     <PublicShell>
       <section className="hero">
         <div className="hero-copy">
-          <div className="eyebrow">{t('ui.landing_eyebrow')}</div>
-          <h1>{t('ui.landing_headline')}</h1>
-          <p>{t('ui.landing_sub')}</p>
+          <div className="eyebrow">{tx('ui.landing_eyebrow')}</div>
+          <h1>{tx('ui.landing_headline')}</h1>
+          <p>{tx('ui.landing_sub')}</p>
           <div className="hero-cta">
             {catalog?.signupEnabled !== false && (
               <button type="button" className="btn ember" onClick={() => goTo('signup')}>
@@ -158,7 +179,7 @@ export function LandingView(): JSX.Element {
               {t('action.login')}
             </button>
           </div>
-          <div className="hero-note">{t('ui.landing_trial_note')}</div>
+          <div className="hero-note">{tx('ui.landing_trial_note')}</div>
         </div>
 
         {/* Angka-angka ini dihitung dari struktur produk yang sebenarnya, bukan
@@ -168,19 +189,19 @@ export function LandingView(): JSX.Element {
         <div className="stat-band">
           <div className="stat">
             <div className="num">{moduleCount}</div>
-            <span className="cap">{t('ui.landing_stat_modules')}</span>
+            <span className="cap">{tx('ui.landing_stat_modules')}</span>
           </div>
           <div className="stat">
             <div className="num">{NAV_GROUPS.length}</div>
-            <span className="cap">{t('ui.landing_stat_domains')}</span>
+            <span className="cap">{tx('ui.landing_stat_domains')}</span>
           </div>
           <div className="stat">
             <div className="num">2</div>
-            <span className="cap">{t('ui.landing_stat_locales')}</span>
+            <span className="cap">{tx('ui.landing_stat_locales')}</span>
           </div>
           <div className="stat">
             <div className="num">100%</div>
-            <span className="cap">{t('ui.landing_stat_tenancy')}</span>
+            <span className="cap">{tx('ui.landing_stat_tenancy')}</span>
           </div>
         </div>
       </section>
@@ -191,9 +212,9 @@ export function LandingView(): JSX.Element {
           dengan aplikasinya. Sumbernya sama dengan navigasi di dalam aplikasi. */}
       <section className="public-section tinted">
         <div className="section-head">
-          <div className="eyebrow">{t('ui.landing_modules_eyebrow')}</div>
-          <h2>{t('ui.landing_modules_title')}</h2>
-          <p className="section-sub">{t('ui.landing_modules_sub', { modules: moduleCount, domains: NAV_GROUPS.length })}</p>
+          <div className="eyebrow">{tx('ui.landing_modules_eyebrow')}</div>
+          <h2>{tx('ui.landing_modules_title')}</h2>
+          <p className="section-sub">{tx('ui.landing_modules_sub', { modules: moduleCount, domains: NAV_GROUPS.length })}</p>
         </div>
         <div className="feature-grid">
           {NAV_GROUPS.map((group) => (
@@ -212,8 +233,8 @@ export function LandingView(): JSX.Element {
 
       <section className="public-section">
         <div className="section-head">
-          <div className="eyebrow">{t('ui.landing_why_eyebrow')}</div>
-          <h2>{t('ui.landing_why_title')}</h2>
+          <div className="eyebrow">{tx('ui.landing_why_eyebrow')}</div>
+          <h2>{tx('ui.landing_why_title')}</h2>
         </div>
         <div className="feature-grid pairs">
           {(
@@ -225,8 +246,8 @@ export function LandingView(): JSX.Element {
             ] as const
           ).map(([title, body]) => (
             <div key={title} className="feature-card">
-              <h3>{t(title)}</h3>
-              <p>{t(body)}</p>
+              <h3>{tx(title)}</h3>
+              <p>{tx(body)}</p>
             </div>
           ))}
         </div>
@@ -234,9 +255,9 @@ export function LandingView(): JSX.Element {
 
       <section className="public-section tinted" id="paket">
         <div className="section-head">
-          <div className="eyebrow">{t('ui.landing_plans_eyebrow')}</div>
-          <h2>{t('ui.landing_plans_title')}</h2>
-          <p className="section-sub">{t('ui.landing_plans_sub')}</p>
+          <div className="eyebrow">{tx('ui.landing_plans_eyebrow')}</div>
+          <h2>{tx('ui.landing_plans_title')}</h2>
+          <p className="section-sub">{tx('ui.landing_plans_sub')}</p>
         </div>
         {catalog === null ? (
           <p className="section-sub">{t('ui.loading')}</p>
@@ -266,8 +287,8 @@ export function LandingView(): JSX.Element {
       </section>
 
       <section className="public-cta">
-        <h2>{t('ui.landing_cta_title')}</h2>
-        <p>{t('ui.landing_cta_sub')}</p>
+        <h2>{tx('ui.landing_cta_title')}</h2>
+        <p>{tx('ui.landing_cta_sub')}</p>
         <div className="hero-cta">
           {catalog?.signupEnabled !== false && (
             <button type="button" className="btn ember" onClick={() => goTo('signup')}>

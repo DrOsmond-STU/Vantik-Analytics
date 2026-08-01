@@ -3,6 +3,7 @@
  * 7 (Administrasi Sistem), dan 8 (Langganan & Billing).
  */
 import { useState } from 'react';
+import { CmsPanel } from './cms.tsx';
 import { useApp } from '../app/AppContext.tsx';
 import { api, ApiError, type AuditRow, type Dataset, type KpiSummary, type MfaStatus } from '../lib/api.ts';
 import { useAsync } from '../lib/useAsync.ts';
@@ -1436,6 +1437,7 @@ export function TenantView(): JSX.Element {
 
   return (
     <div className="view-enter">
+      <CmsPanel />
       <PageHead title="Manajemen Tenant" subtitle={locale === 'id' ? 'Isolasi data penuh antar-tenant' : 'Full data isolation between tenants'} />
       <ViewState state={state}>
         {(data) => (

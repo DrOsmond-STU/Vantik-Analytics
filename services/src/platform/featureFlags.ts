@@ -42,13 +42,24 @@ export const MODULE_KEYS = [
 
 export type ModuleKey = (typeof MODULE_KEYS)[number];
 
-export type QuotaKey =
-  | 'users'
-  | 'datasets'
-  | 'storage_mb'
-  | 'connections'
-  | 'embed_tokens'
-  | 'ai_calls_monthly';
+/**
+ * Kuota yang dikenal sistem.
+ *
+ * Daftar runtime lebih dulu, tipenya diturunkan darinya — bukan sebaliknya. CMS perlu
+ * MENGITERASI kuota untuk membangun formulir, dan tipe union murni tidak menyisakan
+ * apa pun saat dikompilasi. Dua daftar terpisah akan berbeda pada penambahan kuota
+ * berikutnya, dan yang ketinggalan diam-diam menjadi kuota tak tersunting.
+ */
+export const QUOTA_KEYS = [
+  'users',
+  'datasets',
+  'storage_mb',
+  'connections',
+  'embed_tokens',
+  'ai_calls_monthly',
+] as const;
+
+export type QuotaKey = (typeof QUOTA_KEYS)[number];
 
 /**
  * Siklus berlangganan yang ditawarkan (PRD 6.27).

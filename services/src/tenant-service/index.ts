@@ -11,6 +11,7 @@ import { newId, nowIso, type Db } from '../platform/db.ts';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../platform/errors.ts';
 import { hashPassword, validatePasswordPolicy } from '../platform/crypto.ts';
 import { PLAN_BY_CODE, PLAN_CATALOG, isBillingCycle, type BillingCycle } from '../platform/featureFlags.ts';
+import { resolvePlan } from '../platform/planCatalog.ts';
 import type { RequestContext } from '../platform/context.ts';
 import { PlatformOperatorDb } from '../platform/tenancy.ts';
 import { seedStandardRoles } from '../identity-service/index.ts';
@@ -62,8 +63,14 @@ export class TenantService {
   /** Menanam katalog paket (idempoten). */
   seedPlans(): void {
     const insert = this.db.prepare(
-      `INSERT OR REPLACE INTO plans (code, name, monthly_price, annual_price,
-                                     features_json, quotas_json, sort_order)
+      // OR IGNORE, BUKAN OR REPLACE.
+      //
+      // Katalog ini kini dapat disunting operator lewat CMS, dan fungsi ini berjalan
+      // setiap kali proses menyala. OR REPLACE akan mengembalikan seluruh harga ke
+      // nilai kode pada setiap restart — perubahan yang hilang tanpa pesan kesalahan
+      // apa pun, dan baru ketahuan saat pelanggan ditagih dengan angka lama.
+      `INSERT OR IGNORE INTO plans (code, name, monthly_price, annual_price,
+                                    features_json, quotas_json, sort_order)
        VALUES (?,?,?,?,?,?,?)`,
     );
     for (const plan of PLAN_CATALOG) {
@@ -91,7 +98,9 @@ export class TenantService {
     if (this.db.prepare('SELECT 1 FROM tenants WHERE slug = ?').get(input.slug)) {
       throw new ConflictError('error.tenant_slug_taken');
     }
-    if (!PLAN_BY_CODE.has(input.planCode)) {
+    // Katalog EFEKTIF, supaya paket yang dibuat operator lewat CMS benar-benar dapat
+    // dipilih saat pendaftaran — bukan ditawarkan di halaman depan lalu ditolak di sini.
+    if (!resolvePlan(this.db, input.planCode)) {
       throw new ValidationError('error.plan_unknown', { plan: input.planCode });
     }
     // Siklus divalidasi DI SINI, bukan hanya di rute HTTP: provisioning juga dipanggil

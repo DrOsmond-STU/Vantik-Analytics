@@ -10,6 +10,7 @@ import type { Db } from './db.ts';
 import { ForbiddenError } from './errors.ts';
 import { FeatureFlags, PLAN_BY_CODE, type ModuleKey, type PlanDefinition } from './featureFlags.ts';
 import { can, requiresMfa, resolvePermissions, type EffectivePermissions, type Permission } from './rbac.ts';
+import { resolvePlan } from './planCatalog.ts';
 import { loadRlsScope, RlsScope } from './rls.ts';
 import { TenantScopedDb } from './tenancy.ts';
 
@@ -279,7 +280,9 @@ export function loadFeatureFlags(db: Db, tenantId: string, tenantStatus: string)
     .get(tenantId) as (SubscriptionPeriodRow & { plan_code: string }) | undefined;
 
   const planCode = sub?.plan_code ?? 'starter';
-  const plan: PlanDefinition = PLAN_BY_CODE.get(planCode) ?? PLAN_BY_CODE.get('starter')!;
+  // Katalog EFEKTIF, bukan definisi kode: kuota dan hak modul yang disunting operator
+  // lewat CMS harus benar-benar berlaku, bukan hanya tampil di halaman depan.
+  const plan: PlanDefinition = resolvePlan(db, planCode) ?? PLAN_BY_CODE.get('starter')!;
   const lapsed = sub !== undefined && subscriptionLapsed(sub);
   const blockedByStatus = tenantStatus === 'read_only' || tenantStatus === 'past_due';
   return new FeatureFlags(
