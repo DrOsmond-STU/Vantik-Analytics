@@ -5,6 +5,7 @@ const db_ts_1 = require("../platform/db.js");
 const errors_ts_1 = require("../platform/errors.js");
 const crypto_ts_1 = require("../platform/crypto.js");
 const featureFlags_ts_1 = require("../platform/featureFlags.js");
+const planCatalog_ts_1 = require("../platform/planCatalog.js");
 const tenancy_ts_1 = require("../platform/tenancy.js");
 const index_ts_1 = require("../identity-service/index.js");
 /** Retensi data setelah berhenti berlangganan sebelum penghapusan permanen. */
@@ -20,8 +21,15 @@ class TenantService {
     }
     /** Menanam katalog paket (idempoten). */
     seedPlans() {
-        const insert = this.db.prepare(`INSERT OR REPLACE INTO plans (code, name, monthly_price, annual_price,
-                                     features_json, quotas_json, sort_order)
+        const insert = this.db.prepare(
+        // OR IGNORE, BUKAN OR REPLACE.
+        //
+        // Katalog ini kini dapat disunting operator lewat CMS, dan fungsi ini berjalan
+        // setiap kali proses menyala. OR REPLACE akan mengembalikan seluruh harga ke
+        // nilai kode pada setiap restart — perubahan yang hilang tanpa pesan kesalahan
+        // apa pun, dan baru ketahuan saat pelanggan ditagih dengan angka lama.
+        `INSERT OR IGNORE INTO plans (code, name, monthly_price, annual_price,
+                                    features_json, quotas_json, sort_order)
        VALUES (?,?,?,?,?,?,?)`);
         for (const plan of featureFlags_ts_1.PLAN_CATALOG) {
             insert.run(plan.code, plan.name, plan.monthlyPrice, plan.annualPrice, JSON.stringify(plan.features), JSON.stringify({ quotas: plan.quotas, overBehaviour: plan.overBehaviour }), plan.sortOrder);
@@ -39,7 +47,9 @@ class TenantService {
         if (this.db.prepare('SELECT 1 FROM tenants WHERE slug = ?').get(input.slug)) {
             throw new errors_ts_1.ConflictError('error.tenant_slug_taken');
         }
-        if (!featureFlags_ts_1.PLAN_BY_CODE.has(input.planCode)) {
+        // Katalog EFEKTIF, supaya paket yang dibuat operator lewat CMS benar-benar dapat
+        // dipilih saat pendaftaran — bukan ditawarkan di halaman depan lalu ditolak di sini.
+        if (!(0, planCatalog_ts_1.resolvePlan)(this.db, input.planCode)) {
             throw new errors_ts_1.ValidationError('error.plan_unknown', { plan: input.planCode });
         }
         // Siklus divalidasi DI SINI, bukan hanya di rute HTTP: provisioning juga dipanggil

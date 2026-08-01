@@ -39,6 +39,7 @@ const index_ts_9 = require("./designer-service/index.js");
 const index_ts_10 = require("./alerting-service/index.js");
 const index_ts_11 = require("./iot-gateway-service/index.js");
 const index_ts_12 = require("./presentation-service/index.js");
+const index_ts_13 = require("./cms-service/index.js");
 function createApp(options = {}) {
     const db = options.db ?? (0, db_ts_1.openDatabase)({ paths: options.paths });
     const keyring = options.keyring ?? crypto_ts_1.KeyRing.fromEnv();
@@ -1080,7 +1081,7 @@ function createApp(options = {}) {
      */
     app.get('/api/v1/public/plans', (_req, res) => {
         res.json({
-            plans: featureFlags_ts_1.PLAN_CATALOG.map((plan) => ({
+            plans: (0, index_ts_13.resolveCatalog)(db).map((plan) => ({
                 code: plan.code,
                 name: plan.name,
                 monthlyPrice: plan.monthlyPrice,
@@ -1097,6 +1098,18 @@ function createApp(options = {}) {
             signupEnabled: selfSignupEnabled(),
             currency: 'IDR',
         });
+    });
+    /**
+     * Teks halaman depan yang disunting operator.
+     *
+     * Mengembalikan HANYA kunci yang benar-benar ditimpa. Klien menggabungkannya di atas
+     * kamusnya sendiri, sehingga kalimat yang tidak pernah disentuh tetap ikut terbarui
+     * saat rilis berikutnya memperbaikinya — dan halaman depan tidak pernah kosong
+     * hanya karena basis datanya masih baru.
+     */
+    app.get('/api/v1/public/content', (req, res) => {
+        const locale = typeof req.query.locale === 'string' ? req.query.locale : 'id';
+        res.json({ locale, content: (0, index_ts_13.contentOverrides)(db, locale) });
     });
     /**
      * Pendaftaran mandiri: pengunjung memilih paket dan langsung mendapat ruang kerja
@@ -1332,6 +1345,95 @@ function createApp(options = {}) {
         const ctx = (0, http_ts_1.requireContext)(req);
         ctx.require('platform:health', { module: 'Manajemen Tenant' });
         res.json((0, retention_ts_1.retentionReport)(db));
+    });
+    /* ---------------------------- CMS ----------------------------
+     *
+     * Dijaga `tenant:configure` — izin yang sama dengan Manajemen Tenant, karena yang
+     * disunting di sini adalah permukaan PLATFORM: halaman depan yang dilihat semua
+     * pengunjung dan harga yang berlaku bagi semua pelanggan. Bukan wewenang admin satu
+     * tenant, betapa pun besar tenant itu.
+     *
+     * Seluruh penulisan dicatat ke Log Aktivitas: mengubah harga dan mengubah janji di
+     * halaman depan adalah tindakan komersial yang harus dapat ditelusuri siapa
+     * pelakunya dan kapan.
+     */
+    const CMS_MODULE = { module: 'Manajemen Tenant' };
+    api.get('/system/cms/content', (req, res) => {
+        const ctx = (0, http_ts_1.requireContext)(req);
+        ctx.require('tenant:configure', CMS_MODULE);
+        res.json({ editableKeys: index_ts_13.EDITABLE_CONTENT_KEYS, overrides: (0, index_ts_13.allContentOverrides)(db) });
+    });
+    api.put('/system/cms/content', (req, res) => {
+        const ctx = (0, http_ts_1.requireContext)(req);
+        ctx.require('tenant:configure', CMS_MODULE);
+        const body = req.body;
+        if (typeof body.key !== 'string' || typeof body.locale !== 'string' || typeof body.value !== 'string') {
+            throw new errors_ts_1.ValidationError('error.invalid_request');
+        }
+        (0, index_ts_13.setContent)(db, body.key, body.locale, body.value, ctx.actor.userId);
+        audit.record({
+            tenantId: ctx.tenant.id,
+            actorUserId: ctx.actor.userId,
+            actorLabel: ctx.actor.email,
+            action: 'cms.content.update',
+            module: 'Manajemen Tenant',
+            objectType: 'site_content',
+            objectId: `${body.key}:${body.locale}`,
+            // Nilainya TIDAK dicatat: teks pemasaran bisa panjang, dan Log Aktivitas bukan
+            // tempat menyimpan riwayat versi. Yang perlu dapat ditelusuri adalah SIAPA
+            // mengubah kunci MANA dan KAPAN.
+            detail: { key: body.key, locale: body.locale, cleared: body.value.trim() === '' },
+        });
+        res.json({ ok: true, overrides: (0, index_ts_13.allContentOverrides)(db) });
+    });
+    api.get('/system/cms/plans', (req, res) => {
+        const ctx = (0, http_ts_1.requireContext)(req);
+        ctx.require('tenant:configure', CMS_MODULE);
+        res.json({ plans: (0, index_ts_13.catalogForEditing)(db), moduleKeys: featureFlags_ts_1.MODULE_KEYS, quotaKeys: featureFlags_ts_1.QUOTA_KEYS });
+    });
+    api.put('/system/cms/plans/:code', (req, res) => {
+        const ctx = (0, http_ts_1.requireContext)(req);
+        ctx.require('tenant:configure', CMS_MODULE);
+        const body = req.body;
+        (0, index_ts_13.upsertPlan)(db, {
+            code: String(req.params.code),
+            name: String(body.name ?? ''),
+            monthlyPrice: Number(body.monthlyPrice ?? 0),
+            annualPrice: Number(body.annualPrice ?? 0),
+            quotas: body.quotas ?? {},
+            modules: body.modules ?? [],
+            description: body.description ?? null,
+            sortOrder: Number(body.sortOrder ?? 100),
+            published: body.published !== false,
+        }, ctx.actor.userId);
+        audit.record({
+            tenantId: ctx.tenant.id,
+            actorUserId: ctx.actor.userId,
+            actorLabel: ctx.actor.email,
+            action: 'cms.plan.update',
+            module: 'Manajemen Tenant',
+            objectType: 'plan_catalog',
+            objectId: String(req.params.code),
+            detail: { monthlyPrice: Number(body.monthlyPrice ?? 0), published: body.published !== false },
+        });
+        res.json({ plans: (0, index_ts_13.catalogForEditing)(db) });
+    });
+    api.delete('/system/cms/plans/:code', (req, res) => {
+        const ctx = (0, http_ts_1.requireContext)(req);
+        ctx.require('tenant:configure', CMS_MODULE);
+        (0, index_ts_13.deletePlan)(db, String(req.params.code));
+        audit.record({
+            tenantId: ctx.tenant.id,
+            actorUserId: ctx.actor.userId,
+            actorLabel: ctx.actor.email,
+            action: 'cms.plan.delete',
+            module: 'Manajemen Tenant',
+            objectType: 'plan_catalog',
+            objectId: String(req.params.code),
+            severity: 'warning',
+            detail: {},
+        });
+        res.json({ plans: (0, index_ts_13.catalogForEditing)(db) });
     });
     app.use((0, http_ts_1.errorHandler)());
     return { app, db, audit, auth, tenants, keyring, scheduler };

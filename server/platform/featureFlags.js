@@ -7,7 +7,7 @@
  *    seluruh paket langganan."
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FeatureFlags = exports.PLAN_BY_CODE = exports.PLAN_CATALOG = exports.BILLING_CYCLE_BY_CODE = exports.BILLING_CYCLES = exports.MODULE_KEYS = void 0;
+exports.FeatureFlags = exports.PLAN_BY_CODE = exports.PLAN_CATALOG = exports.BILLING_CYCLE_BY_CODE = exports.BILLING_CYCLES = exports.QUOTA_KEYS = exports.MODULE_KEYS = void 0;
 exports.isBillingCycle = isBillingCycle;
 exports.cycleMonths = cycleMonths;
 exports.planPrice = planPrice;
@@ -44,6 +44,22 @@ exports.MODULE_KEYS = [
     'subscription_management',
     'billing_invoice',
     'usage_metering',
+];
+/**
+ * Kuota yang dikenal sistem.
+ *
+ * Daftar runtime lebih dulu, tipenya diturunkan darinya — bukan sebaliknya. CMS perlu
+ * MENGITERASI kuota untuk membangun formulir, dan tipe union murni tidak menyisakan
+ * apa pun saat dikompilasi. Dua daftar terpisah akan berbeda pada penambahan kuota
+ * berikutnya, dan yang ketinggalan diam-diam menjadi kuota tak tersunting.
+ */
+exports.QUOTA_KEYS = [
+    'users',
+    'datasets',
+    'storage_mb',
+    'connections',
+    'embed_tokens',
+    'ai_calls_monthly',
 ];
 exports.BILLING_CYCLES = [
     { code: 'monthly', months: 1, discount: 0, sortOrder: 1 },

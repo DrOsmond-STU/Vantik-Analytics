@@ -8,6 +8,7 @@ exports.loadFeatureFlags = loadFeatureFlags;
 const errors_ts_1 = require("./errors.js");
 const featureFlags_ts_1 = require("./featureFlags.js");
 const rbac_ts_1 = require("./rbac.js");
+const planCatalog_ts_1 = require("./planCatalog.js");
 const rls_ts_1 = require("./rls.js");
 const tenancy_ts_1 = require("./tenancy.js");
 /** Aksi yang menuntut re-autentikasi segar (SECURITY.md Bagian 4 & 16.3). */
@@ -216,7 +217,9 @@ function loadFeatureFlags(db, tenantId, tenantStatus) {
         ORDER BY created_at DESC LIMIT 1`)
         .get(tenantId);
     const planCode = sub?.plan_code ?? 'starter';
-    const plan = featureFlags_ts_1.PLAN_BY_CODE.get(planCode) ?? featureFlags_ts_1.PLAN_BY_CODE.get('starter');
+    // Katalog EFEKTIF, bukan definisi kode: kuota dan hak modul yang disunting operator
+    // lewat CMS harus benar-benar berlaku, bukan hanya tampil di halaman depan.
+    const plan = (0, planCatalog_ts_1.resolvePlan)(db, planCode) ?? featureFlags_ts_1.PLAN_BY_CODE.get('starter');
     const lapsed = sub !== undefined && subscriptionLapsed(sub);
     const blockedByStatus = tenantStatus === 'read_only' || tenantStatus === 'past_due';
     return new featureFlags_ts_1.FeatureFlags(plan, {}, lapsed || blockedByStatus, 
