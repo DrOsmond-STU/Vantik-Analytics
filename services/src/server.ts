@@ -91,6 +91,17 @@ export function mountWebApp(app: express.Express, webRoot: string): void {
 export function startServer(): ReturnType<express.Express['listen']> {
   // Passenger (cPanel) menetapkan PORT sendiri; jangan pernah dipatok di kode.
   const port = Number(process.env.PORT ?? 4000);
+
+  // Alamat ikat. Bawaannya SELURUH antarmuka, karena itu yang diharapkan Passenger.
+  //
+  // Tetapi tidak semua shared hosting punya Passenger: sebagian menjalankan proses
+  // Node sendiri dan meneruskan lalu lintas lewat `RewriteRule … [P]` di .htaccess.
+  // Pada bentuk itu, mengikat seluruh antarmuka berarti port Node dapat dijangkau
+  // LANGSUNG dari internet — melewati pemaksaan HTTPS, penolakan berkas `.env`/`.db`,
+  // dan seluruh header keamanan yang dipasang Apache. `VANTIK_BIND_HOST=127.0.0.1`
+  // menutup jalan itu tanpa mengubah perilaku pemasangan berbasis Passenger.
+  const bindHost = process.env.VANTIK_BIND_HOST?.trim() || undefined;
+
   const { app, db, scheduler } = createApp();
 
   // Penjadwal dimulai DI SINI, bukan di `createApp()`.
@@ -104,8 +115,9 @@ export function startServer(): ReturnType<express.Express['listen']> {
   if (webRoot) mountWebApp(app, webRoot);
   else app.use(notFoundHandler());
 
-  const server = app.listen(port, () => {
-    console.log(`[vantik] siap · port ${port} · driver ${db.driver} · data ${resolveDataDir()}`);
+  const onListening = (): void => {
+    const where = bindHost ? `${bindHost}:${port}` : `port ${port}`;
+    console.log(`[vantik] siap · ${where} · driver ${db.driver} · data ${resolveDataDir()}`);
     if (!process.env.VANTIK_SCHEDULER_TOKEN) {
       // Dinyatakan terbuka: tanpa cron eksternal, penjadwalan hanya berjalan selama
       // proses hidup — dan Passenger mematikan proses yang idle.
@@ -118,7 +130,9 @@ export function startServer(): ReturnType<express.Express['listen']> {
       // Tidak akan sampai di sini: KeyRing.fromEnv() sudah menolak lebih dulu.
       console.error('[vantik] VANTIK_MASTER_KEY belum diset (SECURITY.md Bagian 6)');
     }
-  });
+  };
+
+  const server = bindHost ? app.listen(port, bindHost, onListening) : app.listen(port, onListening);
 
   const shutdown = (signal: string): void => {
     console.log(`[vantik] ${signal} diterima, menutup`);

@@ -86,6 +86,52 @@ cPanel → **Setup Node.js App** → **Create Application**:
 
 Klik **Create**. Jangan jalankan dulu.
 
+### 3b. Bila "Setup Node.js App" TIDAK ada di cPanel Anda
+
+Sebagian hosting menyediakan Node.js tetapi mematikan Passenger (di daftar fitur cPanel,
+`passengerapps` bernilai `0`). Aplikasi tetap dapat dipasang: jalankan prosesnya sendiri,
+lalu biarkan Apache meneruskan lalu lintas kepadanya.
+
+Tiga bagian yang harus ada, dan **ketiganya wajib** — melewatkan satu menghasilkan
+pemasangan yang bocor atau mati sendiri:
+
+1. **Proses mengikat loopback saja.** Isi `VANTIK_BIND_HOST=127.0.0.1` dan `PORT` yang
+   belum dipakai aplikasi lain di akun yang sama. Tanpa ini prosesnya mendengarkan di
+   seluruh antarmuka, sehingga `http://IP-SERVER:PORT` menjawab langsung dari internet —
+   melewati pemaksaan HTTPS dan seluruh proteksi berkas di `.htaccess`.
+
+2. **`.htaccess` di document root subdomain** yang mem-proxy ke proses itu:
+
+   ```apache
+   DirectoryIndex disabled
+   Options -Indexes -MultiViews
+
+   <IfModule mod_rewrite.c>
+     RewriteEngine On
+     # Biarkan verifikasi AutoSSL/Let's Encrypt dilayani Apache langsung.
+     RewriteRule ^\.well-known/ - [L]
+     RewriteCond %{REQUEST_URI} !^/\.well-known/ [NC]
+     RewriteRule .* http://127.0.0.1:PORT_ANDA%{REQUEST_URI} [P,QSA,L]
+   </IfModule>
+
+   <IfModule mod_headers.c>
+     RequestHeader set X-Forwarded-Proto "https" env=HTTPS
+   </IfModule>
+   ```
+
+   Baris `X-Forwarded-Proto` bukan hiasan: tanpa itu aplikasi mengira permintaan datang
+   lewat HTTP polos dan cookie sesi ber-flag `Secure` tidak akan pernah terkirim balik.
+
+3. **Cron penjaga proses**, karena tidak ada Passenger yang menyalakan ulang proses yang
+   mati. Skrip yang keluar diam-diam bila prosesnya masih hidup, dan menyalakannya bila
+   tidak — dipanggil cron beberapa menit sekali. Pola ini juga yang membuat aplikasi
+   hidup lagi setelah server di-reboot.
+
+Konsekuensi yang perlu diterima: **prosesnya tidak pernah tidur**, sehingga memakai jatah
+memori akun terus-menerus (aplikasi ini ±120–200 MB). Itu justru menghilangkan masalah
+"permintaan pertama lambat" pada Bagian 11, tetapi periksa batas memori paket Anda lebih
+dulu — pada paket dengan batas 1 GB, satu aplikasi Node masih longgar, empat tidak.
+
 ---
 
 ## 4. Konfigurasi variabel lingkungan
@@ -103,6 +149,9 @@ Lalu di **Setup Node.js App**, bagian *Environment variables*, tambahkan:
 | `NODE_ENV` | `production` |
 | `VANTIK_MASTER_KEY` | hasil perintah di atas (64 karakter hex) |
 | `VANTIK_DATA_DIR` | `../vantik-data` |
+
+> **Bila hosting Anda tidak punya "Setup Node.js App"**, lihat Bagian 3b — di sana
+> `VANTIK_BIND_HOST=127.0.0.1` menjadi **wajib**, bukan opsional.
 
 Alternatif: salin `.env.example` menjadi `.env` di `~/vantik/` dan isi di sana.
 Variabel dari panel hosting **menang** atas berkas `.env`.
