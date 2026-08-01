@@ -139,6 +139,8 @@ export function LandingView(): JSX.Element {
     api.plans().then(setCatalog).catch(() => setCatalog(null));
   }, []);
 
+  const moduleCount = NAV_GROUPS.reduce((n, g) => n + g.items.length, 0);
+
   return (
     <PublicShell>
       <section className="hero">
@@ -148,41 +150,72 @@ export function LandingView(): JSX.Element {
           <p>{t('ui.landing_sub')}</p>
           <div className="hero-cta">
             {catalog?.signupEnabled !== false && (
-              <button type="button" className="btn primary" onClick={() => goTo('signup')}>
+              <button type="button" className="btn ember" onClick={() => goTo('signup')}>
                 {t('action.start_trial')}
               </button>
             )}
-            <button type="button" className="btn" onClick={() => goTo('login')}>
+            <button type="button" className="btn ghost-light" onClick={() => goTo('login')}>
               {t('action.login')}
             </button>
           </div>
           <div className="hero-note">{t('ui.landing_trial_note')}</div>
         </div>
+
+        {/* Angka-angka ini dihitung dari struktur produk yang sebenarnya, bukan
+            diketik sebagai klaim pemasaran: `moduleCount` dan jumlah domain berasal
+            dari peta navigasi yang sama dengan yang dipakai aplikasi di dalam. Klaim
+            yang tidak dapat menua sendiri adalah klaim yang cepat menjadi salah. */}
+        <div className="stat-band">
+          <div className="stat">
+            <div className="num">{moduleCount}</div>
+            <span className="cap">{t('ui.landing_stat_modules')}</span>
+          </div>
+          <div className="stat">
+            <div className="num">{NAV_GROUPS.length}</div>
+            <span className="cap">{t('ui.landing_stat_domains')}</span>
+          </div>
+          <div className="stat">
+            <div className="num">2</div>
+            <span className="cap">{t('ui.landing_stat_locales')}</span>
+          </div>
+          <div className="stat">
+            <div className="num">100%</div>
+            <span className="cap">{t('ui.landing_stat_tenancy')}</span>
+          </div>
+        </div>
       </section>
+      <div className="divider-gradient" />
 
       {/* Delapan domain adalah struktur produk yang sebenarnya (PRD Lampiran B), bukan
           daftar fitur pemasaran yang disusun terpisah dan lambat laun tidak cocok lagi
           dengan aplikasinya. Sumbernya sama dengan navigasi di dalam aplikasi. */}
-      <section className="public-section">
-        <h2>{t('ui.landing_modules_title')}</h2>
-        <p className="section-sub">{t('ui.landing_modules_sub', { modules: NAV_GROUPS.reduce((n, g) => n + g.items.length, 0), domains: NAV_GROUPS.length })}</p>
+      <section className="public-section tinted">
+        <div className="section-head">
+          <div className="eyebrow">{t('ui.landing_modules_eyebrow')}</div>
+          <h2>{t('ui.landing_modules_title')}</h2>
+          <p className="section-sub">{t('ui.landing_modules_sub', { modules: moduleCount, domains: NAV_GROUPS.length })}</p>
+        </div>
         <div className="feature-grid">
           {NAV_GROUPS.map((group) => (
-            <Card key={group.labelKey} className="feature-card">
+            <div key={group.labelKey} className="feature-card">
+              <div className="domain-no" aria-hidden="true">{group.number}</div>
               <h3>{t(group.labelKey)}</h3>
               <ul>
                 {group.items.map((item) => (
                   <li key={item.view}>{item.label}</li>
                 ))}
               </ul>
-            </Card>
+            </div>
           ))}
         </div>
       </section>
 
       <section className="public-section">
-        <h2>{t('ui.landing_why_title')}</h2>
-        <div className="feature-grid">
+        <div className="section-head">
+          <div className="eyebrow">{t('ui.landing_why_eyebrow')}</div>
+          <h2>{t('ui.landing_why_title')}</h2>
+        </div>
+        <div className="feature-grid pairs">
           {(
             [
               ['ui.landing_why_1_title', 'ui.landing_why_1_body'],
@@ -191,17 +224,20 @@ export function LandingView(): JSX.Element {
               ['ui.landing_why_4_title', 'ui.landing_why_4_body'],
             ] as const
           ).map(([title, body]) => (
-            <Card key={title} className="feature-card">
+            <div key={title} className="feature-card">
               <h3>{t(title)}</h3>
               <p>{t(body)}</p>
-            </Card>
+            </div>
           ))}
         </div>
       </section>
 
-      <section className="public-section" id="paket">
-        <h2>{t('ui.landing_plans_title')}</h2>
-        <p className="section-sub">{t('ui.landing_plans_sub')}</p>
+      <section className="public-section tinted" id="paket">
+        <div className="section-head">
+          <div className="eyebrow">{t('ui.landing_plans_eyebrow')}</div>
+          <h2>{t('ui.landing_plans_title')}</h2>
+          <p className="section-sub">{t('ui.landing_plans_sub')}</p>
+        </div>
         {catalog === null ? (
           <p className="section-sub">{t('ui.loading')}</p>
         ) : (
@@ -227,6 +263,21 @@ export function LandingView(): JSX.Element {
             </div>
           </>
         )}
+      </section>
+
+      <section className="public-cta">
+        <h2>{t('ui.landing_cta_title')}</h2>
+        <p>{t('ui.landing_cta_sub')}</p>
+        <div className="hero-cta">
+          {catalog?.signupEnabled !== false && (
+            <button type="button" className="btn ember" onClick={() => goTo('signup')}>
+              {t('action.start_trial')}
+            </button>
+          )}
+          <button type="button" className="btn ghost-light" onClick={() => goTo('login')}>
+            {t('action.login')}
+          </button>
+        </div>
       </section>
     </PublicShell>
   );
@@ -297,7 +348,7 @@ function PlanCard({
         <li>{t('ui.plan_ai', { value: quotaLabel(plan.quotas.ai_calls_monthly ?? 0, locale) })}</li>
       </ul>
       {signupEnabled && (
-        <button type="button" className="btn primary" onClick={() => goTo('signup')}>
+        <button type="button" className="btn brand" onClick={() => goTo('signup')}>
           {t('action.subscribe')}
         </button>
       )}
@@ -385,7 +436,7 @@ export function SignupView(): JSX.Element {
             </p>
             <button
               type="button"
-              className={done.pendingApproval ? 'btn' : 'btn primary'}
+              className={done.pendingApproval ? 'btn' : 'btn brand'}
               style={{ width: '100%', justifyContent: 'center' }}
               onClick={() => goTo(done.pendingApproval ? 'landing' : 'login')}
             >
@@ -465,7 +516,7 @@ export function SignupView(): JSX.Element {
 
               {errorKey && <div className="note warn">{t(errorKey)}</div>}
 
-              <button type="submit" className="btn primary" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
+              <button type="submit" className="btn brand" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
                 {busy ? t('ui.loading') : t('action.subscribe')}
               </button>
             </form>
@@ -510,7 +561,7 @@ export function ForgotPasswordView(): JSX.Element {
             <p>{t('ui.forgot_sent_body')}</p>
             {!sent.transportConfigured && <div className="note warn">{t('ui.forgot_no_transport')}</div>}
             <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
-              <button type="button" className="btn primary" style={{ justifyContent: 'center' }} onClick={() => goTo('reset')}>
+              <button type="button" className="btn brand" style={{ justifyContent: 'center' }} onClick={() => goTo('reset')}>
                 {t('action.have_reset_code')}
               </button>
               <button type="button" className="btn" style={{ justifyContent: 'center' }} onClick={() => goTo('login')}>
@@ -536,7 +587,7 @@ export function ForgotPasswordView(): JSX.Element {
             <Field label={t('ui.login_email')}>
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required />
             </Field>
-            <button type="submit" className="btn primary" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
+            <button type="submit" className="btn brand" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
               {busy ? t('ui.loading') : t('action.send_reset')}
             </button>
             <button type="button" className="btn" style={{ width: '100%', justifyContent: 'center', marginTop: 8 }} onClick={() => goTo('login')}>
@@ -586,7 +637,7 @@ export function ResetPasswordView(): JSX.Element {
           {done ? (
             <>
               <p>{t('ui.reset_done')}</p>
-              <button type="button" className="btn primary" style={{ width: '100%', justifyContent: 'center' }} onClick={() => goTo('login')}>
+              <button type="button" className="btn brand" style={{ width: '100%', justifyContent: 'center' }} onClick={() => goTo('login')}>
                 {t('action.login')}
               </button>
             </>
@@ -605,7 +656,7 @@ export function ResetPasswordView(): JSX.Element {
               {mismatch && <div className="note warn">{t('error.password_confirm_mismatch')}</div>}
               {errorKey && <div className="note warn">{t(errorKey)}</div>}
 
-              <button type="submit" className="btn primary" disabled={busy || mismatch} style={{ width: '100%', justifyContent: 'center' }}>
+              <button type="submit" className="btn brand" disabled={busy || mismatch} style={{ width: '100%', justifyContent: 'center' }}>
                 {busy ? t('ui.loading') : t('action.reset_password')}
               </button>
             </form>

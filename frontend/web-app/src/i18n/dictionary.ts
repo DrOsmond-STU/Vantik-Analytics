@@ -852,6 +852,25 @@ export const dictionary = {
     'Naik atau turun paket kapan saja; selisihnya dihitung pro-rata.',
     'Move up or down any time; the difference is prorated.',
   ],
+  /* Pita angka di halaman depan. Nilainya dihitung dari peta navigasi, bukan
+     ditulis di kamus — yang diterjemahkan hanya keterangannya. */
+  'ui.landing_stat_modules': ['Modul siap pakai', 'Modules ready to use'],
+  'ui.landing_stat_domains': ['Domain fungsi', 'Functional domains'],
+  'ui.landing_stat_locales': ['Bahasa antarmuka', 'Interface languages'],
+  'ui.landing_stat_tenancy': ['Isolasi antar-tenant', 'Cross-tenant isolation'],
+
+  'ui.landing_modules_eyebrow': ['Cakupan produk', 'Product scope'],
+  'ui.landing_why_eyebrow': ['Alasan teknis', 'The technical case'],
+  'ui.landing_plans_eyebrow': ['Harga', 'Pricing'],
+  'ui.landing_cta_title': [
+    'Mulai dari satu divisi, bukan dari seluruh organisasi.',
+    'Start with one division, not the whole organisation.',
+  ],
+  'ui.landing_cta_sub': [
+    'Uji coba tidak menuntut kartu kredit, dan datanya tetap milik Anda bila tidak dilanjutkan.',
+    'The trial asks for no card, and the data stays yours if you stop.',
+  ],
+
   'ui.per_month': ['/bulan', '/month'],
   'ui.plan_annual': ['{price} bila dibayar tahunan', '{price} billed annually'],
   'ui.plan_modules': ['{count} modul aktif', '{count} active modules'],

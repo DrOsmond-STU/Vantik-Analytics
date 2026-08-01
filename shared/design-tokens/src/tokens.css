@@ -43,6 +43,48 @@
   --on-bad-soft: #b91c1c;
   --on-accent-soft: #0a8484;
 
+  /*
+   * Palet merek korporat — dipakai HANYA oleh permukaan publik (halaman depan,
+   * berlangganan, masuk). Mengikuti identitas Semesta Teknologi Utama.
+   *
+   * Dipisah dari `--accent` yang dipakai di dalam aplikasi dan tetap tidak berubah:
+   * di dalam aplikasi, warna adalah PEMBAWA MAKNA (ambang batas, status, seri data),
+   * jadi menariknya ke arah warna merek akan menabrak arti yang sudah dipakai
+   * grafik dan Threshold Ring (DESIGN.md 2.2).
+   */
+  --brand-900: #0b2740;
+  --brand-700: #1189c1;
+  --brand-500: #29abe2;
+  --brand-300: #4bcbfb;
+  --brand-100: #d6effa;
+  --brand-050: #f0f9fe;
+  --ember-700: #db6f08;
+  --ember-500: #f7941d;
+  --ember-300: #fbb040;
+
+  --grad-brand: linear-gradient(115deg, #1189c1 0%, #29abe2 45%, #4bcbfb 100%);
+  --grad-ember: linear-gradient(115deg, #db6f08 0%, #f7941d 50%, #fbb040 100%);
+  --grad-rule: linear-gradient(90deg, #1189c1, #29abe2 30%, #4bcbfb 55%, #fbb040 80%, #f7941d);
+  --grad-headline: linear-gradient(100deg, #ffffff 0%, #b9eaff 45%, #fbb040 100%);
+
+  /* Latar bermesh: gradien radial lembut, bukan gambar — tidak ada aset yang perlu
+     diunduh, dan tetap tajam di layar kepadatan berapa pun. */
+  --mesh-deep:
+    radial-gradient(at 10% 8%, rgba(41, 171, 226, 0.34) 0px, transparent 52%),
+    radial-gradient(at 88% 92%, rgba(247, 148, 29, 0.24) 0px, transparent 48%),
+    radial-gradient(at 78% 6%, rgba(17, 137, 193, 0.3) 0px, transparent 50%);
+  --mesh-canvas:
+    radial-gradient(at 8% 0%, rgba(41, 171, 226, 0.16) 0px, transparent 55%),
+    radial-gradient(at 92% 12%, rgba(251, 176, 64, 0.14) 0px, transparent 50%),
+    radial-gradient(at 60% 100%, rgba(17, 137, 193, 0.12) 0px, transparent 55%);
+  --mesh-canvas-bg: #f7fbfd;
+
+  --shadow-glow: 0 18px 46px -18px rgba(41, 171, 226, 0.75);
+  --shadow-ember: 0 18px 46px -18px rgba(247, 148, 29, 0.75);
+  --shadow-lift: 0 28px 60px -28px rgba(11, 39, 64, 0.4);
+  --public-border: #e2ecf3;
+  --public-surface: #ffffff;
+
   color-scheme: light;
 }
 
@@ -81,6 +123,45 @@
   --on-warn-soft: #fbbf24;
   --on-bad-soft: #f87171;
   --on-accent-soft: #2dd4bf;
+
+  /*
+   * Varian gelap palet merek.
+   *
+   * Biru dan oranye dinaikkan kecerahannya, bukan dipakai ulang apa adanya: nilai
+   * terang-mode di atas latar gelap jatuh di bawah ambang kontras AA untuk teks
+   * kecil. Gradien tetap memakai nilai aslinya karena hanya muncul pada permukaan
+   * berisi (tombol, garis), bukan sebagai warna teks.
+   */
+  --brand-900: #061a2c;
+  --brand-700: #3fb2e6;
+  --brand-500: #5ec4f2;
+  --brand-300: #8ad9fb;
+  --brand-100: #16324a;
+  --brand-050: #0f2437;
+  --ember-700: #f7941d;
+  --ember-500: #fbb040;
+  --ember-300: #fdc76a;
+
+  --grad-brand: linear-gradient(115deg, #1189c1 0%, #29abe2 45%, #4bcbfb 100%);
+  --grad-ember: linear-gradient(115deg, #db6f08 0%, #f7941d 50%, #fbb040 100%);
+  --grad-rule: linear-gradient(90deg, #1189c1, #29abe2 30%, #4bcbfb 55%, #fbb040 80%, #f7941d);
+  --grad-headline: linear-gradient(100deg, #ffffff 0%, #b9eaff 45%, #fbb040 100%);
+
+  --mesh-deep:
+    radial-gradient(at 10% 8%, rgba(41, 171, 226, 0.26) 0px, transparent 52%),
+    radial-gradient(at 88% 92%, rgba(247, 148, 29, 0.18) 0px, transparent 48%),
+    radial-gradient(at 78% 6%, rgba(17, 137, 193, 0.24) 0px, transparent 50%);
+  --mesh-canvas:
+    radial-gradient(at 8% 0%, rgba(41, 171, 226, 0.12) 0px, transparent 55%),
+    radial-gradient(at 92% 12%, rgba(251, 176, 64, 0.09) 0px, transparent 50%),
+    radial-gradient(at 60% 100%, rgba(17, 137, 193, 0.1) 0px, transparent 55%);
+  --mesh-canvas-bg: #0b1220;
+
+  --shadow-glow: 0 18px 46px -18px rgba(41, 171, 226, 0.55);
+  --shadow-ember: 0 18px 46px -18px rgba(247, 148, 29, 0.5);
+  --shadow-lift: 0 28px 60px -28px rgba(0, 0, 0, 0.75);
+  --public-border: #22304a;
+  --public-surface: #131c33;
 
   color-scheme: dark;
 }
