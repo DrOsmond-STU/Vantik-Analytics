@@ -874,6 +874,127 @@ export function EmployeeView(): JSX.Element {
 
 /* ================= Otorisasi User — PRD 6.19 ================= */
 
+/**
+ * Formulir tambah pengguna.
+ *
+ * Ada di sini karena API-nya sudah lengkap sejak awal (`POST /authorization/users`)
+ * tetapi tidak pernah punya pintu di antarmuka — admin hanya dapat MELIHAT daftar.
+ * Akibatnya satu-satunya jalan menambah pengguna adalah lewat pendaftaran mandiri,
+ * yang justru membuat TENANT baru, bukan pengguna baru di tenant yang sama.
+ *
+ * Pengguna selalu terkait satu pegawai di Master Pegawai — itu bentuk datanya, bukan
+ * pilihan layar ini: `CreateUserInput.employeeId` wajib. Karena itu yang ditawarkan
+ * adalah pemilih pegawai, dan pegawai yang SUDAH punya akun tidak muncul lagi supaya
+ * tidak ada dua akun untuk satu orang.
+ */
+function AddUserForm({ roles, onCreated }: {
+  roles: Array<{ code: string; name_id: string; name_en: string }>;
+  onCreated: () => void;
+}): JSX.Element {
+  const { t, locale } = useApp();
+  const employees = useAsync(() => api.get<{ employees: Array<{ id: string; full_name: string; division: string; linked_accounts: number }> }>('/employees'), []);
+  const [open, setOpen] = useState(false);
+  const [employeeId, setEmployeeId] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [roleCodes, setRoleCodes] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [errorKey, setErrorKey] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  if (!open) {
+    return (
+      <button type="button" className="btn brand" onClick={() => setOpen(true)}>
+        {locale === 'id' ? '+ Tambah Pengguna' : '+ Add User'}
+      </button>
+    );
+  }
+
+  const submit = async (): Promise<void> => {
+    setBusy(true);
+    setErrorKey(null);
+    try {
+      await api.post('/authorization/users', { employeeId, email, password, roleCodes });
+      setDone(true);
+      setEmployeeId(''); setEmail(''); setPassword(''); setRoleCodes([]);
+      onCreated();
+    } catch (e) {
+      setErrorKey(e instanceof ApiError ? e.key : 'error.unknown');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const available = (employees.data?.employees ?? []).filter((emp) => emp.linked_accounts === 0);
+
+  return (
+    <div style={{ display: 'grid', gap: '10px', maxWidth: '520px' }}>
+      {errorKey && <p className="muted">{t(errorKey)}</p>}
+      {done && <p className="muted">{locale === 'id' ? 'Pengguna dibuat.' : 'User created.'}</p>}
+
+      <Field label={locale === 'id' ? 'Pegawai' : 'Employee'}>
+        <select value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+          <option value="">{locale === 'id' ? '— pilih pegawai —' : '— select employee —'}</option>
+          {available.map((emp) => (
+            <option key={emp.id} value={emp.id}>{emp.full_name} · {emp.division}</option>
+          ))}
+        </select>
+      </Field>
+      {available.length === 0 && (
+        <p className="muted" style={{ fontSize: '12.5px' }}>
+          {locale === 'id'
+            ? 'Semua pegawai sudah punya akun. Tambahkan pegawai baru di Master Pegawai lebih dulu.'
+            : 'Every employee already has an account. Add one in Master Pegawai first.'}
+        </p>
+      )}
+
+      <Field label="Email">
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+      </Field>
+      <Field label={locale === 'id' ? 'Kata sandi awal' : 'Initial password'}>
+        <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} />
+      </Field>
+      <p className="muted" style={{ fontSize: '12px', marginTop: '-4px' }}>
+        {locale === 'id'
+          ? 'Minimal 12 karakter dengan huruf, angka, dan simbol. Sampaikan lewat kanal terpercaya; pengguna menggantinya sendiri setelah masuk.'
+          : 'At least 12 characters with letters, digits and a symbol. Share it over a trusted channel; the user changes it after signing in.'}
+      </p>
+
+      <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+        <legend style={{ fontSize: '12.5px', fontWeight: 600 }}>{locale === 'id' ? 'Peran' : 'Roles'}</legend>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '4px' }}>
+          {roles.map((role) => (
+            <label key={role.code} style={{ fontSize: '13px', display: 'flex', gap: '6px', alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={roleCodes.includes(role.code)}
+                onChange={(e) =>
+                  setRoleCodes((prev) => (e.target.checked ? [...prev, role.code] : prev.filter((c) => c !== role.code)))
+                }
+              />
+              {locale === 'id' ? role.name_id : role.name_en}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <div style={{ display: 'flex', gap: '8px' }}>
+        <button
+          type="button"
+          className="btn brand"
+          disabled={busy || employeeId === '' || email === '' || password === '' || roleCodes.length === 0}
+          onClick={() => void submit()}
+        >
+          {locale === 'id' ? 'Buat Pengguna' : 'Create User'}
+        </button>
+        <button type="button" className="btn" onClick={() => { setOpen(false); setDone(false); setErrorKey(null); }}>
+          {t('action.cancel')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function AuthorizationView(): JSX.Element {
   const { t, locale } = useApp();
   const users = useAsync(() => api.get<{ users: Array<{ id: string; email: string; status: string; mfa_enrolled: number; last_login_at: string | null; employee_name: string; division: string; roles: string[]; rls: Array<{ dimension: string; operator: string; values: string[] }> }> }>('/authorization/users'), []);
@@ -886,6 +1007,9 @@ export function AuthorizationView(): JSX.Element {
         {(data) => (
           <div className="grid g-12">
             <Panel title={locale === 'id' ? 'Pengguna' : 'Users'} span="wide">
+              <div style={{ marginBottom: '14px' }}>
+                <AddUserForm roles={roles.data?.roles ?? []} onCreated={() => users.reload()} />
+              </div>
               <div className="table-scroll">
                 <table className="stack-mobile">
                   <thead><tr><th>{t('table.name')}</th><th>{t('table.roles')}</th><th>RLS</th><th>MFA</th><th>{t('table.last_login')}</th><th>{t('table.status')}</th></tr></thead>
